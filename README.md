@@ -126,10 +126,19 @@ python scripts/sensor_loop_sensitivity.py --verify
 python scripts/assembly_rigid_null.py --verify
 ```
 
+For each matched rigid-motion subspace, the directional-null tail probability,
+mean, standard deviation, and 95th percentile are evaluated exactly from
+`|cos(theta)|^2 ~ Beta(1/2, (d-1)/2)`. They are not Monte Carlo estimates and
+do not depend on a random seed or number of draws. In the JSON output,
+`p_exact` is canonical; `p_empirical` remains only as a deprecated compatibility
+alias with the same value. The top-level directional-null `n_draws` is `0` and
+its `seed` is `null`. The separate junction-continuity diagnostic remains a
+2,000-draw calculation and records its own sampling method and seed.
+
 Downloaded coordinate files are stored under `data/_cif_cache/` during normal
-generation runs. The assembly command creates `render/open_8cvp_assembly.pdb`
-from the RCSB record before running its check. Verification mode avoids changing
-tracked reference files.
+generation runs. Adding `--write-assembly` to the assembly command creates
+`render/open_8cvp_assembly.pdb` from the RCSB record before running its check.
+Verification mode avoids changing tracked reference files.
 
 ## Create tables and plots
 

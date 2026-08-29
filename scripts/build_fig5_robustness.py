@@ -14,7 +14,7 @@ from figure_package_utils import prepare_figure_dirs, require_rigid_null_schema
 
 FIGURES, VECTOR, _ = prepare_figure_dirs()
 
-import json, numpy as np, matplotlib
+import json, math, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
@@ -40,13 +40,17 @@ mask=np.array([l in OPENL for l in labels])
 if int(mask.sum()) != len(OPENL):
     raise ValueError("ensemble does not contain each canonical open structure exactly once")
 dvec=(confs[mask].mean(0)-confs[~mask].mean(0)).reshape(-1); dvec/=np.linalg.norm(dvec)
-# Panel b null: random directions INSIDE the rigid interdomain subspace, reconstructed
-# from the committed capture and the observed value so the figure needs no eigenvectors.
+# Panel b null: exact absolute-directional-cosine distributions INSIDE each
+# rigid-motion subspace. If C is the absolute cosine between a fixed direction
+# and a uniformly random unit direction in d dimensions, then
+# C^2 ~ Beta(1/2, (d-1)/2). Plotting the closed-form density keeps the figure
+# deterministic and avoids presenting exact inference as a finite simulation.
 _rd=require_rigid_null_schema(arn)
-rng=np.random.default_rng(20260720)
-def _null(dim):
-    r=rng.standard_normal((_rd["n_draws"],dim)); r/=np.linalg.norm(r,axis=1,keepdims=True)
-    return np.abs(r[:,0])
+_null_x=np.linspace(0.0,1.0,1001)
+def _null_density(dim):
+    b=0.5*(dim-1)
+    normaliser=2.0*math.exp(math.lgamma(0.5+b)-math.lgamma(0.5)-math.lgamma(b))
+    return normaliser*np.power(np.clip(1.0-_null_x**2,0.0,None),b-1.0)
 def _clean_svg(path):
     with open(path, encoding="utf-8") as f:
         txt=f.read()
@@ -59,10 +63,10 @@ _bond=_rd["bond_length_preserving_boundary"]
 _equal=_rd["equal_displacement_boundary"]
 _two=_rd["two_block"]
 _three=_rd["three_block"]
-null_rigid=_null(_two["internal_dim"])
-null_rigid3=_null(_three["internal_dim"])
-null_bond=_null(_bond["internal_dim"])
-null_equal=_null(_equal["internal_dim"])
+null_rigid=_null_density(_two["internal_dim"])
+null_rigid3=_null_density(_three["internal_dim"])
+null_bond=_null_density(_bond["internal_dim"])
+null_equal=_null_density(_equal["internal_dim"])
 
 C_OPEN="#3b6ea5"; C_CLOSED="#e07b39"; C_NULL="#b8b8b8"; C_OBS="#D55E00"; META="#555555"; C_BOND="#0072B2"; C_EQUAL="#CC79A7"
 plt.rcParams.update({"font.family":"DejaVu Sans","font.size":8.5,"axes.linewidth":0.8,
@@ -86,19 +90,19 @@ axA.set_ylabel("Directional overlap with open–closed axis"); axA.set_ylim(0,0.
 axA.legend(handles=[Line2D([],[],marker='o',ls='',mfc=C_OPEN,mec=C_OPEN,label='open endpoint'),
     Line2D([],[],marker='o',ls='',mfc=C_CLOSED,mec=C_CLOSED,label='closed endpoint'),
     Line2D([],[],marker='o',ls='',mfc='w',mec=META,label='best-mode directional overlap')],fontsize=7.5,frameon=False,loc="lower left")
-_p2=_two["p_empirical"]; _p3=_three["p_empirical"]
-_pb=_bond["p_empirical"]; _pe=_equal["p_empirical"]
+_p2=_two["p_exact"]; _p3=_three["p_exact"]
+_pb=_bond["p_exact"]; _pe=_equal["p_exact"]
 _o2=_two["observed_direction_cosine_in_subspace"]
 _o3=_three["observed_direction_cosine_in_subspace"]
 _ob=_bond["observed_direction_cosine_in_subspace"]
 _oe=_equal["observed_direction_cosine_in_subspace"]
-axB.hist(null_rigid,bins=60,color=C_NULL,edgecolor="none",alpha=0.85,zorder=2,
+axB.fill_between(_null_x,null_rigid,color=C_NULL,alpha=0.65,zorder=2,
          label=f"2-lobe (obs={_o2:.2f}; p={_p2:.3f})")
-axB.hist(null_rigid3,bins=60,histtype="step",color=META,lw=1.0,zorder=3,
+axB.plot(_null_x,null_rigid3,color=META,lw=1.0,zorder=3,
          label=f"3-domain (obs={_o3:.2f}; p={_p3:.3f})")
-axB.hist(null_bond,bins=60,histtype="step",color=C_BOND,lw=1.3,zorder=4,
+axB.plot(_null_x,null_bond,color=C_BOND,lw=1.3,zorder=4,
          label=f"bond-length (obs={_ob:.2f}; p={_pb:.3f})")
-axB.hist(null_equal,bins=60,histtype="step",color=C_EQUAL,lw=1.3,zorder=4,
+axB.plot(_null_x,null_equal,color=C_EQUAL,lw=1.3,zorder=4,
          label=f"equal displacement (obs={_oe:.2f}; p={_pe:.3f})")
 for observed,color,style in ((_o2,C_OBS,"-"),(_o3,META,"--"),
                              (_ob,C_BOND,"-."),(_oe,C_EQUAL,":")):
@@ -106,7 +110,7 @@ for observed,color,style in ((_o2,C_OBS,"-"),(_o3,META,"--"),
 axB.legend(fontsize=7.5,frameon=True,facecolor="white",edgecolor="none",framealpha=0.92,
     loc="upper left",bbox_to_anchor=(0.0,0.99),borderpad=0.25,labelspacing=0.25)
 axB.set_xlabel("Matched-subspace mode-1 direction cosine")
-axB.set_ylabel(f"Count ({_rd['n_draws']:,} draws)"); axB.set_xlim(0,1.03)
+axB.set_ylabel("Probability density (exact null)"); axB.set_xlim(0,1.03)
 cuts=[float(c) for c in rob["cutoffs"]]
 for l in OPENs:
     axC.plot(cuts,[rob["table"][l][str(c)]["mode1_overlap"] for c in rob["cutoffs"]],"-o",color=C_OPEN,alpha=0.55,ms=3.5,lw=1.0)

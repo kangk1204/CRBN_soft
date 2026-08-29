@@ -142,25 +142,26 @@ t1 = [
     # Both parameterisations, because the significance depends on how many hinges the null
     # is granted and quoting only one would misrepresent the strength of the result.
     ("Random rigid interdomain direction, two lobes",
-     f"p = {two_boundary['p_empirical']:.3f}",
+     f"p = {two_boundary['p_exact']:.3f}",
      (f"matched projected overlap {two_boundary['observed_projected_mode1_overlap']:.2f}; "
       f"direction cosine in subspace {two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
-      f"z = {two_boundary['z']:.2f}; {rigid_null['n_draws']:,} draws; the partition "
+      f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null; the partition "
       "the reported hinge implies")),
     ("Random rigid interdomain direction, three domains",
-     f"p = {three_boundary['p_empirical']:.3f}",
+     f"p = {three_boundary['p_exact']:.3f}",
      (f"matched projected overlap {three_boundary['observed_projected_mode1_overlap']:.2f}; "
       f"direction cosine in subspace {three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
-      f"z = {three_boundary['z']:.2f}; same draws, one more hinge allowed")),
+      f"z = {three_boundary['z']:.2f}; exact {three_boundary['internal_dim']}-dimensional directional null; "
+      "one more hinge allowed")),
     ("Random rigid direction, boundary bond length preserved",
-     f"p = {bond_boundary['p_empirical']:.3f}",
+     f"p = {bond_boundary['p_exact']:.3f}",
      (f"z = {bond_boundary['z']:.2f}; five-dimensional subspace; deposited-displacement "
       f"projection norm {bond_boundary['subspace_capture_of_transition']:.2f}; one scalar "
       f"first-order bond-extension constraint; matched projected overlap "
       f"{bond_boundary['observed_projected_mode1_overlap']:.2f}; direction cosine in subspace "
       f"{bond_boundary['observed_direction_cosine_in_subspace']:.2f}")),
     ("Random rigid direction, equal boundary displacement",
-     f"p = {equal_boundary['p_empirical']:.3f}",
+     f"p = {equal_boundary['p_exact']:.3f}",
      (f"z = {equal_boundary['z']:.2f}; three-dimensional subspace; deposited-displacement "
       f"projection norm {equal_boundary['subspace_capture_of_transition']:.2f}; stronger "
       f"three-component condition that also freezes bond reorientation; matched projected "
@@ -215,7 +216,7 @@ with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
         "normalised dot product between two unit vectors; cumulative overlap is a subspace-projection "
         "norm. Both range from 0 to 1 and are not variance fractions. Å denotes ångström; n denotes a "
         "count; p denotes probability under the stated null; z denotes standardised distance from the "
-        "null mean.*\n"
+        "exact null mean using its exact population standard deviation.*\n"
     )
 
 # ---- Table S1: structure inventory ----

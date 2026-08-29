@@ -20,7 +20,8 @@ construction for any two-lobed molecule.
     partition captures the transition at projection norm 0.93 -- above the projection
     norm in the ten-mode ANM subspace -- so the ANM's contribution is axis selection within that
     space, not description of the motion. Modes 1-3 are all essentially rigid interdomain
-    motions; only mode 1 points along the transition.
+    motions; only mode 1 points along the transition. The uniform-direction null is evaluated
+    exactly because the squared absolute direction cosine follows Beta(1/2, (d-1)/2).
 
 Inputs   render/open_8cvp_assembly.pdb   (Ca-only 8CVP as deposited; --write-assembly
                                           regenerates it from the RCSB mmCIF)
@@ -31,17 +32,106 @@ Usage    python scripts/assembly_rigid_null.py [--verify] [--write-assembly]
 
 The assembly eigendecomposition is a 4452 x 4452 problem and takes a few minutes.
 """
-import csv, json, sys
+import csv, json, math, sys
 from pathlib import Path
 import numpy as np
+from scipy.special import betaincc, betaincinv, gammaln
 
 CUTOFFS = (12.0, 15.0, 18.0)
 CUTOFF_ANM = 15.0          # monomer reference cutoff
 NMODE = 20
 HB_TBD = 318               # TBD starts here; NTD+HB is everything below
 NTD_HB_BOUNDARY = 187      # NTD | helical bundle, for the three-block variant
-NDRAW = 200_000
-SEED = 0
+CONTINUITY_NDRAW = 2_000
+CONTINUITY_SEED = 2
+
+
+def analytic_abs_cosine_null(internal_dim, observed):
+    """Exact null for ``|u . a|`` with ``u`` uniform on a unit sphere.
+
+    For a fixed unit vector ``a`` and a uniformly random unit direction ``u``
+    in ``d`` dimensions, ``|u . a|**2`` follows
+    ``Beta(1/2, (d-1)/2)``.  The returned tail probability, moments and 95th
+    percentile are therefore analytic and do not depend on a sampled basis,
+    random seed, BLAS implementation or finite-draw correction.
+
+    ``p_empirical`` is retained only as a compatibility alias for older
+    consumers.  It is exactly equal to ``p_exact`` and is not empirical.
+    """
+    if isinstance(internal_dim, bool) or not isinstance(internal_dim, (int, np.integer)):
+        raise TypeError("internal_dim must be an integer")
+    internal_dim = int(internal_dim)
+    if internal_dim < 2:
+        raise ValueError("internal_dim must be at least 2")
+    observed = float(observed)
+    if not math.isfinite(observed) or observed < -1e-12 or observed > 1.0 + 1e-12:
+        raise ValueError("observed absolute direction cosine must be finite and in [0, 1]")
+    observed = float(np.clip(observed, 0.0, 1.0))
+
+    alpha = 0.5
+    beta = 0.5 * (internal_dim - 1)
+    p_exact = float(betaincc(alpha, beta, observed * observed))
+    null_mean = float(math.exp(
+        gammaln(internal_dim / 2.0)
+        - 0.5 * math.log(math.pi)
+        - gammaln((internal_dim + 1.0) / 2.0)
+    ))
+    null_variance = max(0.0, 1.0 / internal_dim - null_mean * null_mean)
+    null_sd = float(math.sqrt(null_variance))
+    null_p95 = float(math.sqrt(betaincinv(alpha, beta, 0.95)))
+    z = float((observed - null_mean) / null_sd)
+
+    return {
+        "internal_dim": internal_dim,
+        "p_exact": p_exact,
+        "p_empirical": p_exact,
+        "p_empirical_note": (
+            "Deprecated compatibility alias for p_exact; no empirical draws were used."
+        ),
+        "null_method": "exact_analytic_beta",
+        "null_distribution": {
+            "statistic": "absolute_direction_cosine",
+            "squared_statistic": "Beta(alpha, beta)",
+            "alpha": alpha,
+            "beta": beta,
+        },
+        "z": z,
+        "z_definition": (
+            "(observed_direction_cosine_in_subspace - null_mean) / null_sd using exact "
+            "population moments"
+        ),
+        "null_mean": null_mean,
+        "null_sd": null_sd,
+        "null_p95": null_p95,
+        "null_max": 1.0,
+        "null_max_note": "Theoretical upper support bound, not an observed sample maximum.",
+    }
+
+
+def projected_uniform_directions(basis, n_draws, seed):
+    """Return reproducible uniform directions in a subspace, basis-orientation invariant.
+
+    Gaussian vectors are generated in the fixed full-coordinate frame and only then
+    projected into the subspace. Rotating or sign-flipping an orthonormal basis therefore
+    gives the same realised full-space directions, up to floating-point roundoff.
+    """
+    basis = np.asarray(basis, dtype=float)
+    if basis.ndim != 2 or basis.shape[1] < 1 or not np.isfinite(basis).all():
+        raise ValueError("basis must be a finite two-dimensional matrix with at least one column")
+    if not np.allclose(basis.T @ basis, np.eye(basis.shape[1]), atol=1e-10, rtol=0.0):
+        raise ValueError("basis columns must be orthonormal")
+    if isinstance(n_draws, bool) or not isinstance(n_draws, (int, np.integer)):
+        raise TypeError("n_draws must be an integer")
+    if int(n_draws) < 1:
+        raise ValueError("n_draws must be positive")
+    rng = np.random.default_rng(seed)
+    full_draws = rng.standard_normal((int(n_draws), basis.shape[0]))
+    coefficients = full_draws @ basis
+    norms = np.linalg.norm(coefficients, axis=1, keepdims=True)
+    if np.any(norms <= np.finfo(float).tiny):
+        raise RuntimeError("a projected Gaussian direction had zero norm")
+    coefficients /= norms
+    return coefficients @ basis.T
 
 
 def read_ca_pdb(path):
@@ -291,18 +381,8 @@ def main():
 
     obs = float(abs(V[:, 0] @ dvec))
 
-    def p_value(null_vals, observed):
-        """Add-one empirical tail, matching softmode_lib.null_summary.
-
-        The two conventions were mixed across the repository: this file used the raw
-        exceedance fraction while the shared library used (k+1)/(n+1). At 200,000 draws the
-        two agree far beyond the reported precision, but the raw form can report p = 0 from
-        a finite sample, which is never the right claim. Use one convention everywhere.
-        """
-        return float((int((null_vals >= observed).sum()) + 1) / (null_vals.size + 1))
-
-    def direction_null(basis, seed):
-        """Compare the projected mode and transition in the same unit-sphere sample space."""
+    def direction_null(basis):
+        """Compare projected vectors using the exact unit-sphere cosine distribution."""
         mode_coeff = basis.T @ V[:, 0]
         axis_coeff = basis.T @ dvec
         mode_content = float(np.linalg.norm(mode_coeff))
@@ -313,34 +393,22 @@ def main():
         axis_unit = axis_coeff / axis_capture
         observed_direction = float(abs(mode_unit @ axis_unit))
         projected_overlap = float(abs((basis @ mode_unit) @ dvec))
-        rng = np.random.default_rng(seed)
-        draws = rng.standard_normal((NDRAW, basis.shape[1]))
-        draws /= np.linalg.norm(draws, axis=1, keepdims=True)
-        null_values = np.abs(draws @ axis_unit)
-        null_sd = float(null_values.std(ddof=1))
-        result = {
-            "internal_dim": int(basis.shape[1]),
+        result = dict(analytic_abs_cosine_null(basis.shape[1], observed_direction), **{
             "observed_direction_cosine_in_subspace": observed_direction,
             "observed_projected_mode1_overlap": projected_overlap,
             "anm_mode1_content": mode_content,
             "subspace_capture_of_transition": axis_capture,
-            "p_empirical": p_value(null_values, observed_direction),
-            "z": float((observed_direction - null_values.mean()) / null_sd),
-            "null_mean": float(null_values.mean()),
-            "null_sd": null_sd,
-            "null_p95": float(np.percentile(null_values, 95)),
-            "null_max": float(null_values.max()),
-        }
-        return result, axis_unit, null_values
+        })
+        return result, axis_unit
 
     # Both parameterisations are reported. They answer different questions and they do not
     # agree: how surprising the alignment looks depends on how many hinges the null is
     # allowed. Quoting only the more favourable one would be the same error this analysis
     # was introduced to correct.
-    two_null, two_axis_unit, null = direction_null(two, SEED)
-    three_null, _, null3 = direction_null(three, SEED + 1)
-    p_rigid = two_null["p_empirical"]
-    p_rigid3 = three_null["p_empirical"]
+    two_null, two_axis_unit = direction_null(two)
+    three_null, _ = direction_null(three)
+    p_rigid = two_null["p_exact"]
+    p_rigid3 = three_null["p_exact"]
 
     # The third null: rigid blocks that also stay joined at the domain boundary. The
     # Earlier notes stated that such a null "would be stricter still" and that we had
@@ -353,15 +421,15 @@ def main():
         raise ValueError("analysis window must contain unique boundary residues 317 and 318")
     junction = np.array([int(index_317[0]), int(index_318[0])])
     cont = equal_displacement_subspace(two, int(junction[0]), int(junction[1]))
-    equal_null, _, null_cont = direction_null(cont, SEED + 3)
+    equal_null, _ = direction_null(cont)
     cap_cont = equal_null["subspace_capture_of_transition"]
-    p_cont = equal_null["p_empirical"]
+    p_cont = equal_null["p_exact"]
     bond = bond_length_preserving_subspace(
         two, Xmono, int(junction[0]), int(junction[1])
     )
-    bond_null, _, null_bond = direction_null(bond, SEED + 4)
+    bond_null, _ = direction_null(bond)
     cap_bond = bond_null["subspace_capture_of_transition"]
-    p_bond = bond_null["p_empirical"]
+    p_bond = bond_null["p_exact"]
 
     # A random draw in either subspace is a rigid motion of each block, but nothing forces
     # the blocks to stay in contact: most draws pull the domains apart at the boundary. The
@@ -374,10 +442,15 @@ def main():
         return float(np.linalg.norm(d) / (np.linalg.norm(f) / np.sqrt(len(f))))
 
     obs_disc = discontinuity(dvec)
-    rng_d = np.random.default_rng(SEED + 2)
-    rd = rng_d.standard_normal((2000, two.shape[1]))
-    rd /= np.linalg.norm(rd, axis=1, keepdims=True)
-    null_disc = np.array([discontinuity(two @ c) for c in rd])
+    # Generate fixed Gaussian vectors in the 807-dimensional coordinate frame before
+    # projection. This makes each realised field invariant to arbitrary rotations or
+    # sign flips of the SVD basis spanning the same rigid-motion subspace.
+    continuity_fields = projected_uniform_directions(
+        two,
+        CONTINUITY_NDRAW,
+        CONTINUITY_SEED,
+    )
+    null_disc = np.array([discontinuity(field) for field in continuity_fields])
     frac_as_continuous = float((null_disc <= obs_disc).mean())
 
     per_mode = []
@@ -392,20 +465,20 @@ def main():
           f"(3 blocks {cap3:.3f}); ANM top-10 cumulative = {cum10:.3f}")
     print(f"two-lobe   (dim {two.shape[1]:2d}): in-subspace cosine "
           f"{two_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_rigid:.4f}, "
-          f"z = {two_null['z']:.2f} (null mean {null.mean():.3f}, "
-          f"p95 {np.percentile(null, 95):.3f})")
+          f"z = {two_null['z']:.2f} (exact null mean {two_null['null_mean']:.3f}, "
+          f"p95 {two_null['null_p95']:.3f})")
     print(f"three-body (dim {three.shape[1]:2d}): in-subspace cosine "
           f"{three_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_rigid3:.4f}, "
-          f"z = {three_null['z']:.2f} (null mean {null3.mean():.3f}, "
-          f"p95 {np.percentile(null3, 95):.3f})")
+          f"z = {three_null['z']:.2f} (exact null mean {three_null['null_mean']:.3f}, "
+          f"p95 {three_null['null_p95']:.3f})")
     print(f"equal-displacement boundary (dim {cont.shape[1]:2d}): in-subspace cosine "
           f"{equal_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_cont:.4f}, "
           f"z = {equal_null['z']:.2f} (subspace captures the "
-          f"transition at {cap_cont:.3f}; null mean {null_cont.mean():.3f})")
+          f"transition at {cap_cont:.3f}; exact null mean {equal_null['null_mean']:.3f})")
     print(f"bond-length-preserving boundary (dim {bond.shape[1]:2d}): in-subspace cosine "
           f"{bond_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_bond:.4f}, "
           f"z = {bond_null['z']:.2f} (subspace captures the "
-          f"transition at {cap_bond:.3f}; null mean {null_bond.mean():.3f})")
+          f"transition at {cap_bond:.3f}; exact null mean {bond_null['null_mean']:.3f})")
     print(f"junction continuity: observed {obs_disc:.4f}, null median "
           f"{np.median(null_disc):.4f}; {frac_as_continuous*100:.2f}% of draws are as "
           f"continuous as the observed transition")
@@ -451,16 +524,27 @@ def main():
                 "null_median": float(np.median(null_disc)),
                 "fraction_of_draws_as_continuous": frac_as_continuous,
                 "n_draws": int(len(null_disc)),
-                "note": ("A draw is rigid within each block but nothing holds the blocks "
-                         "together, so most draws separate the domains at the boundary "
-                         "while the observed transition does not. The null therefore "
-                         "concedes block rigidity, not connectivity."),
+                "seed": CONTINUITY_SEED,
+                "method": "full_space_gaussian_projection_monte_carlo",
+                "note": ("Fixed full-coordinate Gaussian draws are projected into the "
+                         "rigid subspace, making the seeded diagnostic invariant to SVD "
+                         "basis signs and rotations. A draw is rigid within each block but "
+                         "nothing holds the blocks together, so most draws separate the "
+                         "domains at the boundary while the observed transition does not. "
+                         "The null therefore concedes block rigidity, not connectivity."),
             },
             # kept for backward compatibility with the two-lobe-only reporting
             "p_random_rigid_direction": p_rigid,
+            "p_random_rigid_direction_note": (
+                "Compatibility alias for two_block.p_exact."
+            ),
             "null_mean": two_null["null_mean"],
             "null_p95": two_null["null_p95"],
-            "n_draws": NDRAW, "seed": SEED,
+            "n_draws": 0,
+            "seed": None,
+            "directional_null_note": (
+                "Directional nulls are exact analytic distributions; n_draws=0 and seed=null."
+            ),
             "per_mode": per_mode,
         },
     }
@@ -480,13 +564,15 @@ def main():
         # reproduce_modes.py --verify does. Asserting only hardcoded ranges would let the
         # committed JSON drift away from the code that claims to produce it -- and this
         # file carries the primary calibration, so it needs the stronger check.
-        import math
         with open("data/assembly_rigid_null.json", encoding="utf-8") as fh:
             committed = json.load(fh)
         crd, cas = committed["rigid_domain_null"], committed["assembly"]
         drift = []
+        checked = 0
 
         def same(label, got, want, tol=2e-3):
+            nonlocal checked
+            checked += 1
             if want is None or not math.isfinite(float(got)):
                 drift.append(f"{label}: missing in the committed artifact")
             elif abs(float(got) - float(want)) > tol:
@@ -518,6 +604,7 @@ def main():
                 "observed_projected_mode1_overlap",
                 "anm_mode1_content",
                 "subspace_capture_of_transition",
+                "p_exact",
                 "p_empirical",
                 "z",
                 "null_mean",
@@ -525,7 +612,24 @@ def main():
                 "null_p95",
                 "null_max",
             ):
-                same(f"{model_name} {field}", recomputed[field], committed_model.get(field))
+                tolerance = 1e-10 if field in {
+                    "p_exact", "p_empirical", "z", "null_mean", "null_sd",
+                    "null_p95", "null_max",
+                } else 2e-3
+                same(
+                    f"{model_name} {field}",
+                    recomputed[field],
+                    committed_model.get(field),
+                    tol=tolerance,
+                )
+            expected_distribution = recomputed["null_distribution"]
+            for field in ("null_method", "p_empirical_note", "z_definition", "null_max_note"):
+                checked += 1
+                if committed_model.get(field) != recomputed[field]:
+                    drift.append(f"{model_name} {field}: committed metadata differs")
+            checked += 1
+            if committed_model.get("null_distribution") != expected_distribution:
+                drift.append(f"{model_name} null_distribution: committed metadata differs")
         for m, d in enumerate(crd.get("per_mode", [])):
             same(f"mode {m+1} direction cosine",
                  per_mode[m]["direction_cosine_in_rigid_subspace"],
@@ -534,11 +638,33 @@ def main():
             k = f"{cut:.1f}"
             same(f"assembly {k} best overlap", assembly[k]["best_overlap"],
                  cas.get("by_cutoff", {}).get(k, {}).get("best_overlap"))
+            checked += 1
             if assembly[k]["best_mode_rank"] != cas.get("by_cutoff", {}).get(k, {}).get("best_mode_rank"):
                 drift.append(f"assembly {k} best mode rank differs from the committed artifact")
+        checked += 4
+        if crd.get("n_draws") != 0:
+            drift.append("directional null n_draws must be zero for exact analytic inference")
+        if crd.get("seed") is not None:
+            drift.append("directional null seed must be null for exact analytic inference")
+        if crd.get("directional_null_note") != out["rigid_domain_null"]["directional_null_note"]:
+            drift.append("directional null metadata differs from the committed artifact")
+        if crd.get("p_random_rigid_direction_note") != out["rigid_domain_null"]["p_random_rigid_direction_note"]:
+            drift.append("directional-null compatibility note differs from the committed artifact")
+        committed_continuity = crd.get("junction_continuity", {})
+        recomputed_continuity = out["rigid_domain_null"]["junction_continuity"]
+        for field in ("observed", "null_median", "fraction_of_draws_as_continuous"):
+            same(
+                f"junction_continuity {field}",
+                recomputed_continuity[field],
+                committed_continuity.get(field),
+            )
+        for field in ("n_draws", "seed", "method", "note"):
+            checked += 1
+            if committed_continuity.get(field) != recomputed_continuity[field]:
+                drift.append(f"junction_continuity {field}: committed metadata differs")
         assert not drift, "recomputed values disagree with data/assembly_rigid_null.json:\n  " \
                           + "\n  ".join(drift)
-        print(f"cross-checked {len(CUTOFFS) * 2 + 14} values against "
+        print(f"cross-checked {checked} values and metadata fields against "
               "data/assembly_rigid_null.json")
 
         a15 = assembly["15.0"]

@@ -230,6 +230,11 @@ def test_rigid_null_consumers_require_matched_subspace_schema():
             "two_block_capture": 0.9,
             "three_block_internal_dim": 12,
             "three_block_capture": 0.95,
+            "n_draws": 0,
+            "seed": None,
+            "directional_null_note": (
+                "Directional nulls are exact analytic distributions; n_draws=0 and seed=null."
+            ),
             "two_block": {
                 "internal_dim": 6,
                 "subspace_capture_of_transition": 0.9,
@@ -256,6 +261,30 @@ def test_rigid_null_consumers_require_matched_subspace_schema():
             },
         }
     }
+    for model in (
+        "two_block",
+        "three_block",
+        "bond_length_preserving_boundary",
+        "equal_displacement_boundary",
+    ):
+        record = stale["rigid_domain_null"][model]
+        record.update(
+            p_exact=record["p_empirical"],
+            p_empirical_note=(
+                "Deprecated compatibility alias for p_exact; no empirical draws were used."
+            ),
+            null_method="exact_analytic_beta",
+            null_distribution={
+                "statistic": "absolute_direction_cosine",
+                "squared_statistic": "Beta(alpha, beta)",
+                "alpha": 0.5,
+                "beta": (record["internal_dim"] - 1) / 2,
+            },
+            null_mean=0.2,
+            null_sd=0.1,
+            null_p95=0.5,
+            null_max=1.0,
+        )
     with pytest.raises(RuntimeError, match=r"(?i)observed_projected_mode1_overlap.*rebuild"):
         helpers.require_rigid_null_schema(stale)
 
@@ -270,6 +299,28 @@ def test_rigid_null_consumers_require_matched_subspace_schema():
             observed_projected_mode1_overlap=0.7,
         )
     assert helpers.require_rigid_null_schema(stale) is stale["rigid_domain_null"]
+
+    stale["rigid_domain_null"]["two_block"]["p_empirical"] += 0.01
+    with pytest.raises(RuntimeError, match=r"p_empirical alias differs from p_exact"):
+        helpers.require_rigid_null_schema(stale)
+    stale["rigid_domain_null"]["two_block"]["p_empirical"] = stale[
+        "rigid_domain_null"
+    ]["two_block"]["p_exact"]
+
+    stale["rigid_domain_null"]["n_draws"] = 200_000
+    with pytest.raises(RuntimeError, match=r"still advertises a sampled directional null"):
+        helpers.require_rigid_null_schema(stale)
+
+
+def test_rigid_null_figure_and_table_consumers_use_exact_distribution():
+    figure = (SCRIPTS / "build_fig5_robustness.py").read_text(encoding="utf-8")
+    tables = (SCRIPTS / "build_tables.py").read_text(encoding="utf-8")
+    assert '"p_exact"' in figure
+    assert '"p_empirical"' not in figure
+    assert "Probability density (exact null)" in figure
+    assert "_null_density" in figure
+    assert "p_empirical" not in tables
+    assert "n_draws" not in tables
 
 
 def test_negative_control_verification_requires_complete_named_set():
@@ -352,14 +403,83 @@ def test_boundary_nulls_distinguish_bond_length_from_equal_displacement():
         )
 
 
-def test_rigid_null_producer_uses_matched_subspace_statistic():
+def test_exact_abs_cosine_null_matches_closed_form_in_three_dimensions():
+    nulls = load_script("assembly_rigid_null")
+    observed = 0.8
+    result = nulls.analytic_abs_cosine_null(3, observed)
+    assert result["p_exact"] == pytest.approx(1.0 - observed, abs=1e-14)
+    assert result["p_empirical"] == result["p_exact"]
+    assert result["null_mean"] == pytest.approx(0.5, abs=1e-14)
+    assert result["null_sd"] == pytest.approx(np.sqrt(1.0 / 12.0), abs=1e-14)
+    assert result["null_p95"] == pytest.approx(0.95, abs=1e-14)
+    assert result["null_max"] == 1.0
+    assert result["null_method"] == "exact_analytic_beta"
+    assert result["null_distribution"] == {
+        "statistic": "absolute_direction_cosine",
+        "squared_statistic": "Beta(alpha, beta)",
+        "alpha": 0.5,
+        "beta": 1.0,
+    }
+
+
+def test_exact_abs_cosine_null_matches_closed_form_in_two_dimensions():
+    nulls = load_script("assembly_rigid_null")
+    observed = 0.6
+    result = nulls.analytic_abs_cosine_null(2, observed)
+    assert result["p_exact"] == pytest.approx(
+        2.0 * np.arccos(observed) / np.pi,
+        abs=1e-14,
+    )
+    assert result["null_mean"] == pytest.approx(2.0 / np.pi, abs=1e-14)
+    assert result["null_sd"] == pytest.approx(
+        np.sqrt(0.5 - (2.0 / np.pi) ** 2),
+        abs=1e-14,
+    )
+    assert result["null_p95"] == pytest.approx(np.sin(0.95 * np.pi / 2.0), abs=1e-14)
+
+
+def test_exact_abs_cosine_null_rejects_invalid_inputs():
+    nulls = load_script("assembly_rigid_null")
+    for dimension in (True, 1, 1.5):
+        with pytest.raises((TypeError, ValueError)):
+            nulls.analytic_abs_cosine_null(dimension, 0.5)
+    for observed in (-0.1, 1.1, np.nan):
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            nulls.analytic_abs_cosine_null(3, observed)
+
+
+def test_rigid_null_producer_uses_matched_subspace_exact_beta_statistic():
     source = (SCRIPTS / "assembly_rigid_null.py").read_text(encoding="utf-8")
     assert "mode_unit = mode_coeff / mode_content" in source
     assert "axis_unit = axis_coeff / axis_capture" in source
     assert "observed_direction = float(abs(mode_unit @ axis_unit))" in source
-    assert "p_value(null_values, observed_direction)" in source
+    direction_null = source.split("def direction_null", 1)[1].split(
+        "# Both parameterisations", 1
+    )[0]
+    assert "analytic_abs_cosine_null" in direction_null
+    assert "default_rng" not in direction_null
+    assert "standard_normal" not in direction_null
+    assert "betaincc" in source
+    assert '"p_exact"' in source
+    assert '"null_method": "exact_analytic_beta"' in source
+    assert '"n_draws": 0' in source
+    assert '"seed": None' in source
+    assert '"method": "full_space_gaussian_projection_monte_carlo"' in source
+    assert '"p_random_rigid_direction_note"' in source
+    assert "tol=tolerance" in source
+    assert "1e-10" in source
     assert '"observed_direction_cosine_in_subspace"' in source
-    assert "p_value(null_vals)" not in source
+    assert "def p_value" not in source
+
+
+def test_junction_continuity_draws_are_invariant_to_svd_basis_rotation():
+    nulls = load_script("assembly_rigid_null")
+    rng = np.random.default_rng(20260829)
+    basis, _ = np.linalg.qr(rng.standard_normal((15, 4)))
+    rotation, _ = np.linalg.qr(rng.standard_normal((4, 4)))
+    first = nulls.projected_uniform_directions(basis, 50, seed=123)
+    rotated = nulls.projected_uniform_directions(basis @ rotation, 50, seed=123)
+    assert np.allclose(first, rotated, atol=1e-12)
 
 
 @pytest.mark.parametrize(

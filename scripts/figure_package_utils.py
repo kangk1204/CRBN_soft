@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import html
+import math
 from numbers import Real
 import zipfile
 from pathlib import Path
@@ -43,8 +44,12 @@ def require_rigid_null_schema(payload: object, source: str = "data/assembly_rigi
     required_model_fields = (
         "internal_dim",
         "subspace_capture_of_transition",
-        "p_empirical",
+        "p_exact",
         "z",
+        "null_mean",
+        "null_sd",
+        "null_p95",
+        "null_max",
         "observed_direction_cosine_in_subspace",
         "observed_projected_mode1_overlap",
     )
@@ -64,6 +69,14 @@ def require_rigid_null_schema(payload: object, source: str = "data/assembly_rigi
             missing.append(model)
             continue
         missing.extend(f"{model}.{field}" for field in fields if field not in record)
+        if record.get("null_method") != "exact_analytic_beta":
+            missing.append(f"{model}.null_method=exact_analytic_beta")
+        if not isinstance(record.get("null_distribution"), dict):
+            missing.append(f"{model}.null_distribution")
+        if "p_empirical" in record and not math.isclose(
+            record["p_empirical"], record["p_exact"], rel_tol=0.0, abs_tol=1e-15
+        ):
+            missing.append(f"{model}.p_empirical alias differs from p_exact")
     if missing:
         raise RuntimeError(
             f"{source} uses an obsolete or incomplete rigid-null schema; missing "
@@ -77,6 +90,11 @@ def require_rigid_null_schema(payload: object, source: str = "data/assembly_rigi
     if any(isinstance(value, bool) or not isinstance(value, Real) for value in numeric_fields):
         raise RuntimeError(
             f"{source} has non-numeric matched-subspace fields. Rebuild it with: "
+            "python scripts/assembly_rigid_null.py"
+        )
+    if rigid.get("n_draws") != 0 or rigid.get("seed") is not None:
+        raise RuntimeError(
+            f"{source} still advertises a sampled directional null; rebuild it with: "
             "python scripts/assembly_rigid_null.py"
         )
     return rigid
