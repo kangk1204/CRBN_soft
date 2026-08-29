@@ -1,17 +1,17 @@
 # CRBN Soft
 
-CRBN Soft contains Python workflows for analysing human cereblon (CRBN) structures from the Protein Data Bank. The code rebuilds curated coordinate matrices, performs principal component and elastic-network analyses, runs sensitivity checks, and creates reproducible tables and plots from prepared source data.
+CRBN Soft provides Python workflows for analysing deposited human cereblon
+(CRBN) structures. The code performs coordinate curation, principal component
+analysis (PCA), anisotropic network model (ANM) calculations, sensitivity
+tests, and reproducible figure and table generation.
 
-This repository contains software only. Large coordinate caches, derived arrays, rendered images and article files are not stored here.
+This is a code-only repository. It does not include coordinate arrays, cached
+Protein Data Bank files, generated images, or word-processing documents.
 
-## What You Need
+## Quick start
 
-- Linux or macOS terminal
-- Conda or Mamba
-- Git
-- Basic familiarity with running Python commands
-
-## Install
+You need Git and either Conda or Mamba. The commands below work on Linux and
+macOS. Windows users can run them in Windows Subsystem for Linux.
 
 Clone the repository:
 
@@ -20,59 +20,103 @@ git clone https://github.com/kangk1204/CRBN_soft.git
 cd CRBN_soft
 ```
 
-Create the analysis environment:
+Create and activate the environment:
 
 ```bash
 conda env create -f environment.yml
-conda activate crbn
+conda activate crbn-soft
 ```
 
-If you use Mamba, the same step is usually faster:
+Mamba can be used in the same way:
 
 ```bash
 mamba env create -f environment.yml
-mamba activate crbn
+mamba activate crbn-soft
 ```
 
-## Data Layout
+Run the checks that do not need analysis inputs:
 
-Most scripts expect a `data/` directory at the repository root. The software release does not include large data files. Place the prepared source-data package in this layout before running the full workflow:
+```bash
+python -m pytest -q
+python -m ruff check .
+```
+
+Both commands should finish without errors.
+
+## Add the analysis inputs
+
+The numerical workflows need a separate CRBN input bundle. Copy its `data/`
+directory into the repository root. Do not place it inside another `data/`
+directory.
+
+The layout should begin like this:
 
 ```text
 CRBN_soft/
-  data/
-    crbn_ensemble.ens.npz
-    crbn_residue_window.csv
-    crbn_curation_log.csv
-    ...
-  render/
-    open_8cvp.pdb
-    closed_5fqd.pdb
-    ...
+├── data/
+│   ├── crbn_ensemble.ens.npz
+│   ├── crbn_residue_window.csv
+│   ├── crbn_curation_log.csv
+│   ├── crbn_anm_modes.npz
+│   ├── pca_diffvec.npz
+│   └── ...
+├── scripts/
+└── environment.yml
 ```
 
-Raw structures can also be downloaded from the RCSB Protein Data Bank by the reproduction scripts when network access is available.
-
-## Common Commands
-
-Run the main structure workflow:
+Check that the main coordinate file is in the correct place:
 
 ```bash
-python scripts/reproduce_ensemble.py --verify
-python scripts/reproduce_tensor.py --verify
+ls data/crbn_ensemble.ens.npz
+```
+
+If this command prints the file name, the path is correct. Input and generated
+data remain untracked because `data/` is excluded from Git.
+
+## Run the main analysis
+
+Always run commands from the repository root.
+
+First, reproduce the main PCA and ANM measurements from the prepared inputs:
+
+```bash
 python scripts/reproduce_modes.py --verify
 ```
 
-Run sensitivity analyses:
+A successful run reports approximately 88.3% for PC1, 0.744 for the ANM
+mode-1 directional overlap, and 0.641 for the ten-mode subspace comparison.
+Directional overlap is an absolute normalized dot product; it is not an
+R-squared value.
+
+Run the main sensitivity checks:
 
 ```bash
 python scripts/pairwise_sensitivity.py --verify
 python scripts/study_group_sensitivity.py --verify
-python scripts/assembly_rigid_null.py --verify
-python scripts/sensor_loop_sensitivity.py --verify
+python scripts/anm_null_significance.py --verify
 ```
 
-Build tables and plots after the required data files are present:
+## Rebuild from Protein Data Bank coordinates
+
+The following checks connect to the RCSB Protein Data Bank. They download raw
+mmCIF coordinates and can take longer on the first run:
+
+```bash
+python scripts/reproduce_tensor.py --verify
+python scripts/reproduce_ensemble.py --verify
+python scripts/sensor_loop_sensitivity.py --verify
+python scripts/assembly_rigid_null.py --write-assembly --verify
+```
+
+Downloaded coordinate files are stored under `data/_cif_cache/` during normal
+generation runs. The assembly command creates `render/open_8cvp_assembly.pdb`
+from the RCSB record before running its check. Verification mode avoids changing
+tracked reference files.
+
+## Create tables and plots
+
+After the input bundle is in place, rebuild the tables and two-dimensional
+plots with:
 
 ```bash
 python scripts/build_tables.py
@@ -81,26 +125,35 @@ python scripts/build_fig2.py
 python scripts/build_fig3.py
 python scripts/build_fig4.py
 python scripts/build_fig5_robustness.py
+python scripts/build_figS1.py
+python scripts/build_figS2.py
+python scripts/build_figS3.py
 ```
 
-Some structural renderers require PyMOL:
+Generated files are written below `figures/` and `study/`. Both directories are
+excluded from Git.
+
+The optional three-dimensional renderers require PyMOL and prepared files in a
+top-level `render/` directory. Install PyMOL separately, then run a renderer, for
+example:
 
 ```bash
+conda install -c conda-forge pymol-open-source
 pymol -cq scripts/render_fig2_3d.py
-pymol -cq scripts/render_fig4_pocket.py
 ```
 
-## Checks
+## Troubleshooting
 
-Run the lightweight repository checks:
+- `No such file or directory: data/...` means the input bundle is missing or
+  nested at the wrong level.
+- `ModuleNotFoundError` usually means that `crbn-soft` is not active. Run
+  `conda activate crbn-soft` and try again.
+- A network error during a coordinate rebuild usually means that RCSB is
+  temporarily unavailable. The local PCA and ANM checks do not need network
+  access once the input bundle is present.
+- Run every command from the directory that contains this README.
 
-```bash
-python -m pytest -q
-python -m ruff check .
-```
+## Citation and license
 
-The full numerical checks require the prepared `data/` and `render/` directories.
-
-## License
-
-The code is released under the MIT License.
+Software citation metadata are provided in `CITATION.cff`. The code is released
+under the MIT License.

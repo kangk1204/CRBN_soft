@@ -3,7 +3,7 @@
 
 The CRBN open->closed transition is tested for alignment with an intrinsic
 soft mode of the fold (mode-1 overlap 0.744 for the isolated monomer). The obvious
-review question is whether the protocol would return a comparable number for ANY
+calibration question is whether the protocol would return a comparable number for ANY
 multi-domain protein, i.e. whether 0.744 carries information. A single number cannot
 answer that; a control panel can.
 
@@ -18,8 +18,8 @@ pipeline: VHL (the other principal E3 substrate receptor used for degraders) and
 quality-filtered random sample of lysozyme structures (single-domain). If the protocol
 is not merely reporting "this is a protein", these must fail.
 
-Every pair is also scored against the STRICT rigid-body-subspace null (see
-scripts/rigidbody_null.py), not only against the permissive isotropic null, and the
+Every pair is also scored against a strict rigid-body-subspace null, not only
+against the permissive isotropic null, and the
 rigid-body content of each transition is reported. Structure quality (resolution, R-free,
 method) is fetched from the RCSB data API, recorded for every entry, and used as an
 explicit filter so the panel cannot be dismissed as a resolution artefact.

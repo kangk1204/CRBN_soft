@@ -80,7 +80,7 @@ def main():
         ov = np.abs(av.T @ a)
         return float(ov[0]), int(np.argmax(ov)) + 1, a
 
-    # entry-weighted (the axis used in the paper)
+    # entry-weighted (the axis used in the primary analysis)
     ax_entry = confs[~open_mask].mean(0) - confs[open_mask].mean(0)
     o_entry, r_entry, a_entry = overlap(ax_entry)
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bootstrap + leave-one-open-out robustness of the ensemble soft mode (Fig S3).
+"""Bootstrap and leave-one-open-out robustness of the ensemble soft mode.
 
-Regenerates data/pca_robust.npz, the source array for Fig S3 (built by
-scripts/build_figS3.py). PC1 "overlap" is measured against the
+Regenerates data/pca_robust.npz, the grouped-bootstrap source array. PC1
+"overlap" is measured against the
 STRUCTURAL open->closed difference vector (data/pca_diffvec.npz, the canonical
 five-open/65-closed axis), NOT against the ensemble's own PC1 -- the latter
-would be near-circular. Reproduces the paper's Fig S3: PC1 variance 86% [47,94]
+would be near-circular. The grouped bootstrap gives PC1 variance 86% [47,94]
 and open->closed overlap 0.98 [0.76,1.00] from the cluster bootstrap over 43 publication groups
 (fixed seed 42, 2000 resamples). The entry-level bootstrap, 88% [73,93] and 0.99 [0.97,1.00], is
 computed alongside it and reported only as a within-study comparison.

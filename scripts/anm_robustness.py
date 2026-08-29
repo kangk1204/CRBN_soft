@@ -8,7 +8,7 @@ This script tests how that
 result depends on (a) which structure the ANM is built on, and (b) the ANM
 contact cutoff. It also reports, for every endpoint, the BEST-overlapping mode
 and its rank, making explicit that closed structures predict the same axis but
-at a higher mode index (the rank shift the reviewers asked us to quantify).
+at a higher mode index (the endpoint-dependent rank shift).
 
 All conformers are the 269-Ca superposed tensor (same atom order as resnums), so
 ANM is built directly on tensor coordinates -- no per-PDB chain handling needed.

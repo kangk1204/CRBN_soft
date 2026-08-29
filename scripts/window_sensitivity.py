@@ -28,7 +28,7 @@ Three questions are answered, none of them with a free parameter.
     it does not have.
 
 (B) DOES THE RESULT SURVIVE A RELAXED WINDOW?  Alternative ensembles are built
-    under eight rules -- the paper's rule, >=95% and >=90% window coverage
+    under eight rules -- the primary rule, >=95% and >=90% window coverage
     (analysis restricted to the intersection of resolved positions), a fixed
     reduced window chosen so that the excluded OPEN structures are retained,
     terminal-only gap tolerance, dropping the undocumented 4.0 A resolution
@@ -38,12 +38,12 @@ Three questions are answered, none of them with a free parameter.
     for each from scratch.
 
 (C) HOW MUCH DOES ANY ANALYST CHOICE MATTER?  Three further choices that a
-    referee can reasonably contest are swept on the published ensemble:
+    analyst can reasonably vary are swept on the fixed ensemble:
     superposition target (whole molecule / NTD only / HB only / TBD only),
     method subset (all / X-ray only / cryo-EM only, the collinearity control),
     and wild-type versus engineered construct membership.
 
-The ANM protocol is the paper's throughout: 15 A cutoff, 20 non-trivial modes,
+The primary ANM protocol is used throughout: 15 A cutoff, 20 non-trivial modes,
 built on the open reference restricted to the ensemble's own common window.
 Every ANM is built on coordinates taken FROM THE ENSEMBLE BEING TESTED, so the
 modes and the difference vector always live in the same frame; scoring an ANM
@@ -73,7 +73,7 @@ try:
 except ModuleNotFoundError:  # imported by path from the repository root
     from scripts.pdb_id import validate_pdb_id
 
-CUTOFF_ANM = 15.0        # A, the paper's ANM contact cutoff
+CUTOFF_ANM = 15.0        # A, the primary ANM contact cutoff
 N_MODES = 20             # non-trivial ANM modes retained
 RES_MAX = 4.0            # A, the resolution ceiling implied by the curated set
 MIN_DOMAIN_CA = 10       # Ca needed in a domain before its centroid is trusted
@@ -339,7 +339,7 @@ def superpose(confs, iters=8, sel=None):
 
     sel selects the atom indices the ROTATION is fitted on (the superposition
     target); the returned coordinates always cover every atom. sel=None fits on
-    the whole molecule, which is the paper's choice.
+    the whole molecule, which is the primary choice.
     """
     idx = np.arange(confs.shape[1]) if sel is None else np.asarray(sel)
     ref = confs[0] - confs[0][idx].mean(0)
@@ -392,7 +392,7 @@ def pca(confs):
 
 
 def widest_gap_cut(s1, lead=15):
-    """The paper's open/closed split: cut at the widest gap among the leaders."""
+    """Primary open/closed split: cut at the widest gap among the leaders."""
     srt = np.sort(s1)[::-1]
     gaps = srt[:-1] - srt[1:]
     ncut = int(np.argmax(gaps[:lead])) + 1
@@ -558,7 +558,7 @@ def main():
             if dd is not None:
                 d[q] = dd
         vals = np.array(list(d.values()))
-        # the reference open set is the geometric top cluster of the paper's own
+        # the reference open set is the geometric top cluster of the primary
         # ensemble; taken as the members beyond the widest gap in sorted distance
         srt = np.sort(vals)[::-1]
         g = srt[:-1] - srt[1:]
@@ -717,8 +717,8 @@ def main():
         superposition["on_" + dom] = analyse(confs0, labels0, common0, ref_label="8CVP",
                                              sup_sel=idx[dom], tag="sup_" + dom)
     # the axis itself moves with the superposition anchor; report |cos| against
-    # the paper's whole-molecule axis so a referee who superposes differently can
-    # find their own number here rather than conclude the paper is wrong
+    # the primary whole-molecule axis so an alternative superposition can be
+    # compared directly
     def axis_under(sel):
         al = superpose(confs0, sel=sel)
         pcs_l, _, sc_l = pca(al)
@@ -887,7 +887,7 @@ def main():
         # the contiguous 103-116 segment; its mode 1 becomes a local hinge-bundle
         # motion (86% of the amplitude in HB) and the overlap collapses to 0.13.
         # That is a property of the truncated NETWORK, not of the added structures:
-        # the same 223-residue window applied to the paper's own 70 members gives
+        # the same 223-residue window applied to the primary 70 members gives
         # the same collapse. The assertion therefore requires the headline numbers
         # to survive wherever mode 1 remains delocalised, and requires the
         # collapse to be accompanied by mode-1 localisation where it occurs.
@@ -907,7 +907,7 @@ def main():
                 assert v["anm_best_rank"] == 1, (nm, v["anm_best_rank"])
         # The decisive variant: no resolution ceiling and >=95% coverage retains
         # 6BNB and gives SIX open structures. The headline numbers must survive it,
-        # because this is the ensemble a referee would ask for.
+        # because this is the most informative relaxed-membership ensemble.
         g = variants["g_coverage95_no_res_ceiling"]
         assert g["n_open"] == 6 and "6BNB" in g["open_members"], g["open_members"]
         assert g["pc1_variance_fraction"] > 0.88, g["pc1_variance_fraction"]
@@ -928,7 +928,7 @@ def main():
         assert method_subsets["cos_xray_vs_cryoem_axis"] > 0.9, \
             method_subsets["cos_xray_vs_cryoem_axis"]
         cov90 = variants["b_coverage_90"]
-        print("verify OK: paper rule reproduces 70x269, 5 open, PC1 %.1f%%, ANM m1 %.3f "
+        print("verify OK: fixed rule reproduces 70x269, 5 open, PC1 %.1f%%, ANM m1 %.3f "
               "rank 1, RMSIP %.3f; 28 excluded adjudicated (9 indeterminate, "
               "%d open). Structure-membership relaxations preserve the axis where "
               "mode 1 remains delocalised; the 90%%-coverage node set is a documented "

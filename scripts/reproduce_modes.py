@@ -8,7 +8,6 @@ The 269-residue window is read from data/crbn_residue_window.csv.
 
 Inputs
   data/crbn_ensemble.ens.npz     70 x 269 x 3 curated Cα (superposed)
-  render/open_8cvp.pdb           open reference for the non-circular ANM
 Outputs (regenerated; --verify cross-checks them against the committed
 snapshot read out of git HEAD)
   crbn_pca.npz                   pc1..3, variance ratios, PC1 scores, diff vector
@@ -75,22 +74,6 @@ def modes_from(H, k):
     nz = w > 1e-9
     return w[nz][:k], v[:, nz][:, :k]
 
-def read_ca(pdb, resnums, chain="B"):
-    want = set(int(r) for r in resnums); got = {}
-    for ln in open(pdb):
-        if ln.startswith("ATOM") and ln[12:16].strip() == "CA" and ln[21] == chain:
-            ri = int(ln[22:26])
-            if ri in want and ri not in got:
-                got[ri] = [float(ln[30:38]), float(ln[38:46]), float(ln[46:54])]
-    # Fail loudly on a short read. Filtering silently would return a coordinate array
-    # shorter than the window and misalign every downstream index; the matmul against the
-    # 807-component difference vector would then fail with a shape error far from the cause.
-    absent = [int(r) for r in resnums if int(r) not in got]
-    if absent:
-        raise ValueError(f"{pdb} chain {chain} is missing {len(absent)} window residues "
-                         f"(first: {absent[:5]}); the ANM node set would not match the axis")
-    return np.array([got[int(r)] for r in resnums])
-
 def main():
     verify = "--verify" in sys.argv
     ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
@@ -124,8 +107,13 @@ def main():
     dvec = diff.reshape(-1); dvec /= np.linalg.norm(dvec)
     ov_pc1_diff = abs(pc1 @ dvec)
 
-    # ANM on the OPEN reference (non-circular test)
-    open_ca = read_ca("render/open_8cvp.pdb", resnums)
+    # ANM on the open 8CVP conformer only. Its coordinates are already stored in the
+    # curated tensor in the same rigidly superposed frame as the difference vector.
+    # Superposition changes only rotation and translation, not the internal geometry
+    # used to build the ANM Hessian.
+    matches = [i for i, label in enumerate(labels) if label == "8CVP"]
+    assert len(matches) == 1, f"expected one 8CVP conformer, found {len(matches)}"
+    open_ca = confs[matches[0]]
     Ha = anm_hessian(open_ca, CUTOFF_ANM)
     aw, av = modes_from(Ha, N_MODES)
     anm_diff_overlap = np.array([abs(av[:, m] @ dvec) for m in range(N_MODES)])

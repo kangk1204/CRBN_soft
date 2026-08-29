@@ -225,7 +225,7 @@ def main():
                     if e["paper_rule_call"] == "excluded_post_freeze"]
         sens = audit["sensitivity_if_eligible_entries_are_added"]
         print("post-freeze audit snapshot: %d entities released after %s; "
-              "%d eligible under paper rules, %d excluded by fixed-window coverage; "
+              "%d eligible under fixed rules, %d excluded by fixed-window coverage; "
               "eligible-addition sensitivity %dx%d, open=%d, ANM m1 %.3f rank %d"
               % (len(audited_entities), FREEZE_DATE, len(included), len(excluded),
                  sens["n_conformers"], sens["n_residues"], sens["n_open"],

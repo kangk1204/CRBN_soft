@@ -4,12 +4,12 @@
 The window is the intersection of what every conformer resolves, so it is not a neutral
 choice: any element that is disordered in a subset of the ensemble is removed for all of it.
 If the subset that forces a gap is systematically open or systematically closed, the window
-is biased with respect to the very coordinate being measured, and the paper has to say so.
+is biased with respect to the very coordinate being measured and must be reported.
 
 This script computes, per gap, how many conformers fail to resolve it and which they are. It
 uses the pipeline's own parser and chain rule (scripts/reproduce_tensor.py) so the counts are
 the ones the ensemble was actually built from -- an earlier hand-run of this check used a
-different fallback chain rule and produced numbers that were wrong in the paper's favour.
+different fallback chain rule and produced biased numbers.
 
 Also reported: the N-terminal belt (below the window start), which is excluded on the same
 principle and shows the same asymmetry.

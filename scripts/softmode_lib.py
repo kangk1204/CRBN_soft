@@ -2,7 +2,7 @@
 """Shared numerics for the control-panel / null-model analyses.
 
 Everything here is numpy-only and deterministic. It is imported by
-  scripts/rigidbody_null.py      (rigid-body subspace nulls + transition decomposition)
+  scripts/assembly_rigid_null.py (rigid-body subspace nulls + transition decomposition)
   scripts/control_panel.py       (positive/negative control benchmark)
   scripts/anm_sensitivity_ext.py (cutoff, spring, chain-break, degeneracy, subspace)
   scripts/drug_loop_statistics.py

@@ -18,7 +18,7 @@ and the point of this script is to quantify both sides of it rather than assert 
 Method: the pipeline's own parser and chain rule (reproduce_tensor.py), a window defined
 as the residues every retained conformer resolves, iterative Kabsch superposition, PCA,
 and the same 15 A ANM scored against the open->closed difference of cluster means. The
-comparison ensemble drops the same three structures but keeps the paper's 269-residue
+comparison ensemble drops the same three structures but keeps the primary 269-residue
 window, which separates the effect of losing the apo trio from the effect of the window.
 
 Usage
@@ -129,7 +129,7 @@ def main():
     open_e = np.array([state[p] == "open" for p in kept])
     d_e = axis(Xe, open_e)
 
-    # (2) same 67 structures, but the paper's 269-residue window: isolates the effect of
+    # (2) same 67 structures, but the primary 269-residue window: isolates the effect of
     # losing the apo trio from the effect of changing the window
     Xc, _, _, var_c = build(resolved, kept, paper_window)
     d_c = axis(Xc, open_e)
@@ -164,7 +164,7 @@ def main():
         "loop is in the node set. Mode-1 overlap goes from "
         + ", ".join(f"{a['reference']} {a['mode1_overlap']:.3f} (rank {a['best_mode_rank']})"
                     for a in a_pap)
-        + " on the paper's window to "
+        + " on the primary window to "
         + ", ".join(f"{a['reference']} {a['mode1_overlap']:.3f} (rank {a['best_mode_rank']})"
                     for a in a_ext)
         + " when the loop is retained.")
@@ -183,7 +183,7 @@ def main():
     for a in a_ext:
         print(f"    ANM {a['reference']}: mode-1 {a['mode1_overlap']:.3f}, "
               f"best mode {a['best_mode_rank']} ({a['best_overlap']:.3f})")
-    print(f"same 67 on the paper's {len(paper_window)}-residue window: PC1 {var_c[0]*100:.1f}%")
+    print(f"same 67 on the primary {len(paper_window)}-residue window: PC1 {var_c[0]*100:.1f}%")
     for a in a_pap:
         print(f"    ANM {a['reference']}: mode-1 {a['mode1_overlap']:.3f}, "
               f"best mode {a['best_mode_rank']} ({a['best_overlap']:.3f})")

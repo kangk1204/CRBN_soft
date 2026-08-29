@@ -2,7 +2,7 @@
 """Significance of the ANM open–closed directional overlap against a null model, plus
 leave-one-structure-out robustness.
 
-Two questions the reviewers raised:
+Two robustness questions are addressed here:
   1. Is overlap 0.744 between a single ANM mode and the experimental difference
      vector larger than chance? A 269-Ca mode lives in a 807-d space; random unit
      vectors have small but nonzero overlap with any fixed direction. We build a

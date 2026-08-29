@@ -45,3 +45,9 @@ def test_public_repo_text_has_no_private_or_draft_terms():
             if pattern.search(line):
                 offenders.append(f"{path.relative_to(ROOT)}:{line_no}: {line}")
     assert offenders == []
+
+
+def test_primary_mode_workflow_does_not_require_render_inputs():
+    source = (ROOT / "scripts" / "reproduce_modes.py").read_text(encoding="utf-8")
+    assert "render/open_8cvp.pdb" not in source
+    assert 'label == "8CVP"' in source

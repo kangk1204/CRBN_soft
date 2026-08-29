@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Elastic-network modelling choices: cutoff, springs, chain breaks, degeneracy, subspace.
 
-Five referee-visible questions about the network model, answered on the committed
+Five network-model questions, answered on the committed
 ensemble. All calculations are frame-matched: the ANM is built on ensemble-frame
 coordinates, so its eigenvectors and the committed open->closed difference vector share
 a reference frame (building the ANM from RAW deposited coordinates and scoring against

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The two calibration analyses the primary claim needs: molecular context and the right null.
+"""Two calibration analyses for the primary result: molecular context and a matched null.
 
 Both answer objections that the isotropic and higher-mode nulls in
 anm_null_significance.py cannot address, because both of those nulls are passed by
@@ -32,6 +32,7 @@ Usage    python scripts/assembly_rigid_null.py [--verify] [--write-assembly]
 The assembly eigendecomposition is a 4452 x 4452 problem and takes a few minutes.
 """
 import csv, json, sys
+from pathlib import Path
 import numpy as np
 
 CUTOFFS = (12.0, 15.0, 18.0)
@@ -150,8 +151,10 @@ def write_assembly():
                        % (n, c, r, x, y, z))
         out.append("TER")
     out.append("END")
-    open("render/open_8cvp_assembly.pdb", "w", newline="\n").write("\n".join(out) + "\n")
-    print(f"wrote render/open_8cvp_assembly.pdb with {n} CA")
+    destination = Path("render/open_8cvp_assembly.pdb")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+    print(f"wrote {destination} with {n} CA")
 
 
 def main():
@@ -215,7 +218,7 @@ def main():
         return {
             "two_body_rigid_content": rigid_frac,
             "crbn_internal_deformation": internal(crbn_part, crbn_mask),
-            # Symmetric quantity for the partner. Without it the paper cannot say what the
+            # Symmetric quantity for the partner. Without it the analysis cannot show what the
             # sub-transition modes ARE, only what they are not -- which is how an unsupported
             # claim about them survived in the first place.
             "ddb1_internal_deformation": internal(ddb1_part, ddb1_mask),
