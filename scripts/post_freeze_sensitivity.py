@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Recompute the post-freeze CRBN sensitivity from raw mmCIF coordinates.
+"""Recompute the later-deposition CRBN sensitivity from raw mmCIF coordinates.
 
-The primary 2026-07-20 ensemble remains fixed. This script verifies the separate
-2026-08-28 audit by extracting the recorded primary CRBN chain for every later
-entity, re-adjudicating 269-residue coverage, and adding only same-rule-eligible
-entries to the frozen tensor before recomputing PCA and open-reference ANM.
+The primary 2026-07-20 ensemble remains fixed. This script evaluates later
+depositions recorded on 2026-08-28 by extracting the primary CRBN chain for each
+entity, applying the same 269-residue coverage rule, and adding only eligible
+entries to the primary tensor before recomputing PCA and open-reference ANM.
 
 Usage:
   python scripts/post_freeze_sensitivity.py --verify [--no-network]
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify:
         verify(actual, audit["sensitivity_if_eligible_entries_are_added"])
         print(
-            "verify OK: raw post-freeze mmCIF -> "
+            "verify OK: raw later-deposition mmCIF -> "
             f"{actual['n_conformers']}x{actual['n_residues']}, open={actual['n_open']}, "
             f"PC1 {100 * actual['pc1_variance_fraction']:.1f}%, ANM m1 "
             f"{actual['anm_mode1_overlap']:.3f} rank {actual['anm_best_rank']}, "

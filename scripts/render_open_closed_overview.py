@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Domain-coloured open|closed overview cartoons for the graphical abstract.
+"""Domain-coloured open|closed overview cartoons.
 
 Renders the open (8CVP) and closed (5FQD) chain-B structures as cartoons
 coloured by domain (NTD blue / HB green / TBD orange), with the closed

@@ -28,7 +28,7 @@ Usage
   python scripts/reproduce_ensemble.py --verify
       Query the live archive and CHECK it against the committed freeze snapshot.
       Writes nothing to the freeze files. Optionally records the live result under
-      data/live_audit/<date>.json with --record-audit.
+      data/live_queries/<date>.json with --record-live-query.
   python scripts/reproduce_ensemble.py --write-freeze
       Explicitly (re)write the freeze snapshot. Only for defining a NEW freeze date;
       it overwrites data/rcsb_query_Q96SW2.json and data/crbn_structure_inventory.csv.
@@ -47,7 +47,7 @@ import urllib.request
 RCSB_QUERY = "https://search.rcsb.org/rcsbsearch/v2/query"
 RCSB_GRAPHQL = "https://data.rcsb.org/graphql"
 UNIPROT = "Q96SW2"
-POST_FREEZE_AUDIT = "data/post_freeze_rcsb_audit.json"
+LATER_DEPOSITION_RECORD = "data/post_freeze_rcsb_audit.json"
 MIN_LEN = 50          # entities shorter than this are isolated peptide fragments
 FREEZE_DATE = "2026-07-20"   # RCSB search freeze; ensemble = archive as of this date
 # Archive size at freeze (recorded, not asserted against a live query, since the
@@ -81,23 +81,23 @@ def load_trusted_residue_window(path=ENSEMBLE_PATH):
         raise RuntimeError("trusted ensemble contains an invalid residue window")
     return window
 
-def load_post_freeze_audit():
-    with open(POST_FREEZE_AUDIT, encoding="utf-8") as fh:
-        audit = json.load(fh)
-    assert audit["freeze_date"] == FREEZE_DATE, audit["freeze_date"]
-    assert audit["uniprot"] == UNIPROT, audit["uniprot"]
-    entries = audit["post_freeze_entities"]
+def load_later_deposition_record():
+    with open(LATER_DEPOSITION_RECORD, encoding="utf-8") as fh:
+        record = json.load(fh)
+    assert record["freeze_date"] == FREEZE_DATE, record["freeze_date"]
+    assert record["uniprot"] == UNIPROT, record["uniprot"]
+    entries = record["post_freeze_entities"]
     assert len(entries) == 8, len(entries)
     assert len({e["pdb_entity"] for e in entries}) == len(entries)
     assert all(e["initial_release_date"] > FREEZE_DATE for e in entries)
     included = [e for e in entries if e["paper_rule_call"] == "eligible_post_freeze"]
     excluded = [e for e in entries if e["paper_rule_call"] == "excluded_post_freeze"]
-    sensitivity = audit["sensitivity_if_eligible_entries_are_added"]
+    sensitivity = record["sensitivity_if_eligible_entries_are_added"]
     assert len(included) == 4 and len(excluded) == 4, (len(included), len(excluded))
     assert sensitivity["n_conformers"] == 74, sensitivity
     assert sensitivity["n_residues"] == 269, sensitivity
     assert sensitivity["anm_best_rank"] == 1, sensitivity
-    return audit
+    return record
 
 def rcsb_polymer_entities(accession=UNIPROT):
     q = {"query": {"type": "terminal", "service": "text",
@@ -127,7 +127,7 @@ def entity_lengths(entity_ids):
 
 def main():
     verify = "--verify" in sys.argv
-    write_flags = {"--write-window", "--write-freeze", "--record-audit"}
+    write_flags = {"--write-window", "--write-freeze", "--record-live-query"}
     requested_writes = sorted(write_flags.intersection(sys.argv))
     if verify and requested_writes:
         sys.exit("verify is read-only; do not combine --verify with write flags: "
@@ -184,19 +184,19 @@ def main():
                             int(lengths.get(e, 0) >= MIN_LEN), int(pdb in kept)])
         print(f"REWROTE freeze snapshot: data/crbn_structure_inventory.csv "
               f"({len(entities)} entities) and data/rcsb_query_Q96SW2.json")
-    elif "--record-audit" in sys.argv:
+    elif "--record-live-query" in sys.argv:
         import datetime, os
-        os.makedirs("data/live_audit", exist_ok=True)
+        os.makedirs("data/live_queries", exist_ok=True)
         stamp = datetime.date.today().isoformat()
-        out = f"data/live_audit/{stamp}.json"
+        out = f"data/live_queries/{stamp}.json"
         with open(out, "w") as fh:
-            json.dump({"audited_on": stamp, "freeze_date": FREEZE_DATE,
+            json.dump({"recorded_on": stamp, "freeze_date": FREEZE_DATE,
                        "live_total_count": total, "endpoint": RCSB_QUERY,
                        "entities": sorted(entities)}, fh, indent=1)
-        print(f"wrote live audit {out} (freeze snapshot untouched)")
+        print(f"wrote live archive record {out} (freeze snapshot untouched)")
     else:
         print("freeze snapshot left untouched "
-              "(use --write-freeze to redefine it, --record-audit to log the live archive)")
+              "(use --write-freeze to redefine it, --record-live-query to log the live archive)")
 
     if verify:
         # the committed freeze snapshot is the study evidence: check it is intact and
@@ -211,23 +211,23 @@ def main():
         new_since = sorted(set(entities) - frozen_entities)
         print(f"freeze snapshot intact: {len(frozen_entities)} entities, none withdrawn; "
               f"{len(new_since)} deposited since the freeze {new_since if new_since else ''}")
-        audit = load_post_freeze_audit()
-        audited_entities = sorted(e["pdb_entity"] for e in audit["post_freeze_entities"])
-        missing_from_live = sorted(set(audited_entities) - set(entities))
+        record = load_later_deposition_record()
+        recorded_entities = sorted(e["pdb_entity"] for e in record["post_freeze_entities"])
+        missing_from_live = sorted(set(recorded_entities) - set(entities))
         assert not missing_from_live, (
-            f"post-freeze audit entities absent from live archive: {missing_from_live}")
-        unexpected = sorted(set(audited_entities) - set(new_since))
+            f"later-deposition record contains entities absent from the live archive: {missing_from_live}")
+        unexpected = sorted(set(recorded_entities) - set(new_since))
         assert not unexpected, (
-            f"post-freeze audit contains entities not absent from the freeze snapshot: {unexpected}")
-        included = [e for e in audit["post_freeze_entities"]
+            f"later-deposition record contains entities present in the freeze snapshot: {unexpected}")
+        included = [e for e in record["post_freeze_entities"]
                     if e["paper_rule_call"] == "eligible_post_freeze"]
-        excluded = [e for e in audit["post_freeze_entities"]
+        excluded = [e for e in record["post_freeze_entities"]
                     if e["paper_rule_call"] == "excluded_post_freeze"]
-        sens = audit["sensitivity_if_eligible_entries_are_added"]
-        print("post-freeze audit snapshot: %d entities released after %s; "
+        sens = record["sensitivity_if_eligible_entries_are_added"]
+        print("later-deposition sensitivity: %d entities released after %s; "
               "%d eligible under fixed rules, %d excluded by fixed-window coverage; "
               "eligible-addition sensitivity %dx%d, open=%d, ANM m1 %.3f rank %d"
-              % (len(audited_entities), FREEZE_DATE, len(included), len(excluded),
+              % (len(recorded_entities), FREEZE_DATE, len(included), len(excluded),
                  sens["n_conformers"], sens["n_residues"], sens["n_open"],
                  sens["anm_mode1_overlap"], sens["anm_best_rank"]))
         subprocess.run(
