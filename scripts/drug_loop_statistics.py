@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import softmode_lib as L
 import reproduce_tensor as R
 
-DRUG = [378, 380, 386]                    # tri-tryptophan drug-binding pocket loop
+DRUG = [378, 380, 386]                    # H378/W380/W386 drug-binding pocket loop
 ZN = [323, 326, 391, 394]                 # structural zinc site
 TBD = (318, 426)
 CUTOFF = 15.0

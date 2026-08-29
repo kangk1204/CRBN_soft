@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fig 4 - mobility map of the drug pocket.
-Fully reproducible from committed repo files (relative paths, no hardcoded values).
+Reproducible from the matching archived data/render bundle (relative paths, no hardcoded values).
 Panel a: ANM square-fluctuation across the TBD (data/crbn_anm_modes.npz).
 Panel b: drug vs Zn group-mean mobility percentile for ANM, PCA (data/crbn_residue_fluctuations.csv)
          The MD profile is deliberately NOT shown here: data/crbn_md_rmsf.csv has no
@@ -9,6 +9,14 @@ Panel b: drug vs Zn group-mean mobility percentile for ANM, PCA (data/crbn_resid
 Panel c: closed-state TBD coloured by ANM mobility, with bound S-lenalidomide and the
          structural Zn (figures/panels/render_closed_pocket.png; scripts/render_fig4_pocket.py).
 """
+from figure_package_utils import prepare_figure_dirs, require_prepared_panel
+
+FIGURES, VECTOR, PANELS = prepare_figure_dirs()
+POCKET_PANEL = require_prepared_panel(
+    PANELS / "render_closed_pocket.png",
+    "pymol -cq scripts/render_fig4_pocket.py",
+)
+
 import csv
 import numpy as np
 import matplotlib
@@ -18,7 +26,7 @@ from matplotlib.gridspec import GridSpec
 from PIL import Image
 
 DOM = {"NTD": "#3b6ea5", "HB": "#4bab8c", "TBD": "#e07b39"}
-FOCAL = "#d1492b"; GREY = "#9aa0a6"
+FOCAL = "#6f4e9c"; GREY = "#9aa0a6"  # purple avoids a red/green pairing
 plt.rcParams.update({"font.family": "sans-serif", "font.size": 8.5, "pdf.fonttype": 42, "ps.fonttype": 42})
 
 def set_frame(ax):
@@ -122,7 +130,7 @@ set_frame(axb)
 
 # panel c
 axc = fig.add_subplot(gs[0, 2]); axc.axis('off')
-axc.imshow(Image.open("figures/panels/render_closed_pocket.png"))
+axc.imshow(Image.open(POCKET_PANEL))
 
 axc.text(0.12, 1.02, "drug-binding loop", transform=axc.transAxes,
          fontsize=7.5, color=FOCAL, fontweight='bold', ha='left', va='bottom')
@@ -133,8 +141,8 @@ axc.text(0.98, 0.18, "Zn\u00b2\u207a site", transform=axc.transAxes,
 
 for ax, l in [(axa, 'a'), (axb, 'b'), (axc, 'c')]:
     panel_letter(ax, f"({l})")
-fig.savefig("figures/Fig4.png", dpi=300, bbox_inches="tight")
-fig.savefig("figures/vector/Fig4.pdf", bbox_inches="tight"); fig.savefig("figures/vector/Fig4.svg", bbox_inches="tight")
-clean_svg("figures/vector/Fig4.svg")
+fig.savefig(FIGURES / "Fig4.png", dpi=300, bbox_inches="tight")
+fig.savefig(VECTOR / "Fig4.pdf", bbox_inches="tight"); fig.savefig(VECTOR / "Fig4.svg", bbox_inches="tight")
+clean_svg(VECTOR / "Fig4.svg")
 print(f"Fig4 rebuilt. "
       f"ANM {conc['ANM']['drug']:.1f}/{conc['ANM']['Zn']:.1f}, PCA {conc['PCA']['drug']:.1f}/{conc['PCA']['Zn']:.1f}")

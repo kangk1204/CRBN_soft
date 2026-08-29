@@ -5,8 +5,8 @@ Regenerates data/pca_robust.npz, the grouped-bootstrap source array. PC1
 "overlap" is measured against the
 STRUCTURAL open->closed difference vector (data/pca_diffvec.npz, the canonical
 five-open/65-closed axis), NOT against the ensemble's own PC1 -- the latter
-would be near-circular. The grouped bootstrap gives PC1 variance 86% [47,94]
-and open->closed overlap 0.98 [0.76,1.00] from the cluster bootstrap over 43 publication groups
+would be near-circular. The grouped bootstrap gives PC1 variance 86% [48,94]
+and open->closed overlap 0.98 [0.75,1.00] across 38 fail-closed publication groups
 (fixed seed 42, 2000 resamples). The entry-level bootstrap, 88% [73,93] and 0.99 [0.97,1.00], is
 computed alongside it and reported only as a within-study comparison.
 
@@ -16,6 +16,8 @@ Inputs (committed, small):
 Output:
   data/pca_robust.npz          vfs, ovs, vf0, ov0, open_labels, vf_closed
 """
+import sys
+
 import numpy as np
 ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
 confs = ens["_confs"]                       # (70, 269, 3)
@@ -55,13 +57,15 @@ print(f"Full ensemble: PC1 var {vf0*100:.1f}%  overlap {ov0:.3f}")
 # and gives an interval that is too narrow to describe the archive. The primary interval is
 # therefore a CLUSTER bootstrap over publication groups; the entry-level interval is kept
 # for comparison and labelled as a within-study interval, which is what it measures.
-import csv as _csv
-_grp = {r["pdb"]: (r["primary_citation_doi"] or f"no_doi:{r['pdb']}") for r in
-        _csv.DictReader(open("data/curation_study_groups.csv", encoding="utf-8"))}
 _lab = [str(x).split("_")[0].split()[0][:4] for x in labels]
+try:
+    from study_groups import load_study_groups
+except ModuleNotFoundError:
+    from scripts.study_groups import load_study_groups
+_grp = load_study_groups(_lab)
 groups = {}
 for i, p in enumerate(_lab):
-    groups.setdefault(_grp.get(p, f"no_doi:{p}"), []).append(i)
+    groups.setdefault(_grp[p], []).append(i)
 gkeys = sorted(groups)
 print(f"study groups: {len(gkeys)} over {n} conformers "
       f"(largest {max(len(v) for v in groups.values())})")
@@ -87,7 +91,7 @@ print(f"Entry bootstrap (within-study) var {vfs_e.mean():.0f}% "
       f"[{np.percentile(vfs_e,2.5):.0f},{np.percentile(vfs_e,97.5):.0f}]  "
       f"overlap {ovs_e.mean():.3f} "
       f"[{np.percentile(ovs_e,2.5):.2f},{np.percentile(ovs_e,97.5):.2f}]")
-print(f"Cluster bootstrap (43 groups)  var {vfs.mean():.0f}% "
+print(f"Cluster bootstrap ({len(gkeys)} groups)  var {vfs.mean():.0f}% "
       f"[{np.percentile(vfs,2.5):.0f},{np.percentile(vfs,97.5):.0f}]  "
       f"overlap {ovs.mean():.3f} "
       f"[{np.percentile(ovs,2.5):.2f},{np.percentile(ovs,97.5):.2f}]")
@@ -109,8 +113,31 @@ print(f"Drop all {len(open_idx)} open: PC1 var {vf_c*100:.1f}%  overlap {ov_c:.3
 # --- save the array consumed by build_figS3.py ---
 # vfs/ovs are the CLUSTER bootstrap, which is what Fig S3 and the Limitations now quote.
 # The entry-level arrays travel with them so the difference stays visible.
-np.savez("data/pca_robust.npz", vfs=vfs, ovs=ovs, vf0=vf0, ov0=ov0,
-         open_labels=labels[open_idx], vf_closed=vf_c,
-         vfs_entry=vfs_e, ovs_entry=ovs_e, n_groups=len(gkeys),
-         frac_resamples_without_open=zero_open / len(vfs))
-print("wrote data/pca_robust.npz")
+payload = {
+    "vfs": vfs,
+    "ovs": ovs,
+    "vf0": vf0,
+    "ov0": ov0,
+    "open_labels": labels[open_idx],
+    "vf_closed": vf_c,
+    "vfs_entry": vfs_e,
+    "ovs_entry": ovs_e,
+    "n_groups": len(gkeys),
+    "frac_resamples_without_open": zero_open / len(vfs),
+}
+if "--verify" in sys.argv:
+    with np.load("data/pca_robust.npz", allow_pickle=False) as current:
+        missing = sorted(set(payload) - set(current.files))
+        if missing:
+            raise AssertionError(f"pca_robust.npz is missing fields: {missing}")
+        for key, expected in payload.items():
+            actual = current[key]
+            if np.issubdtype(np.asarray(expected).dtype, np.number):
+                if not np.allclose(actual, expected, rtol=1e-12, atol=1e-12):
+                    raise AssertionError(f"pca_robust.npz field differs: {key}")
+            elif not np.array_equal(actual, expected):
+                raise AssertionError(f"pca_robust.npz field differs: {key}")
+    print("verify OK: pca_robust.npz matches the 38-group fail-closed bootstrap")
+else:
+    np.savez("data/pca_robust.npz", **payload)
+    print("wrote data/pca_robust.npz")

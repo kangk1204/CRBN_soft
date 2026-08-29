@@ -5,8 +5,8 @@ Deposited PDB entries are not independent samples: one study often contributes
 several structures. The main analysis weights entries equally. This script asks
 whether that weighting drives the reported ANM alignment, by
 
-  1. grouping the 70 curated conformers by RCSB primary-citation DOI
-     (data/curation_study_groups.csv, written by --fetch),
+  1. grouping the 70 curated conformers by RCSB primary-citation DOI, with a
+     committed manual series map for entries that have no DOI,
   2. recomputing the open->closed axis with every STUDY weighted equally
      (each group contributes the mean of its members), and
   3. dropping each whole study in turn (leave-one-study-out).
@@ -21,6 +21,11 @@ Outputs  data/study_group_sensitivity.json
 """
 import csv, json, sys, urllib.request
 import numpy as np
+
+try:
+    from study_groups import load_study_groups, resolve_study_groups
+except ModuleNotFoundError:
+    from scripts.study_groups import load_study_groups, resolve_study_groups
 
 CUTOFF = 15.0
 ROOT_D = "data/"
@@ -52,12 +57,18 @@ def fetch_dois(labels, write=True):
         for e in json.loads(urllib.request.urlopen(req, timeout=90).read())["data"]["entries"]:
             c = e.get("rcsb_primary_citation") or {}
             out[e["rcsb_id"]] = (c.get("pdbx_database_id_DOI") or f"NO_DOI:{e['rcsb_id']}").lower()
+    if set(out) != set(labels):
+        raise RuntimeError(
+            f"RCSB citation response incomplete: missing={sorted(set(labels) - set(out))}, "
+            f"extra={sorted(set(out) - set(labels))}"
+        )
+    resolved = resolve_study_groups(out, labels)
     if write:
         with open(ROOT_D + "curation_study_groups.csv", "w", newline="") as fh:
             w = csv.writer(fh, lineterminator="\n"); w.writerow(["pdb", "primary_citation_doi"])
             for k in sorted(out):
                 w.writerow([k, out[k]])
-    return out
+    return resolved
 
 def main():
     verify = "--verify" in sys.argv
@@ -69,8 +80,7 @@ def main():
     if "--fetch" in sys.argv:
         doi = fetch_dois(labels, write=not verify)
     else:
-        doi = {r["pdb"]: r["primary_citation_doi"]
-               for r in csv.DictReader(open(ROOT_D + "curation_study_groups.csv"))}
+        doi = load_study_groups(labels)
     groups = sorted({doi[l] for l in labels})
 
     aw, av = anm_modes(confs[labels.index("8CVP")])

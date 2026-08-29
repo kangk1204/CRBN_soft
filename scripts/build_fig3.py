@@ -12,6 +12,10 @@
 Domain colour code NTD #3b6ea5 / HB #4bab8c / TBD #e07b39 threaded across figures.
 Panel labels use the panel (a)/(b) convention.
 """
+from figure_package_utils import prepare_figure_dirs
+
+FIGURES, VECTOR, _ = prepare_figure_dirs()
+
 import numpy as np
 import csv
 import matplotlib
@@ -110,8 +114,8 @@ axb.spines[["top", "right"]].set_visible(False)
 axb.text(-0.10, 1.04, "(b)", transform=axb.transAxes, fontsize=13, fontweight="bold", va="top", ha="right")
 
 fig.tight_layout()
-fig.savefig("figures/Fig3.png", dpi=300, bbox_inches="tight")
-fig.savefig("figures/vector/Fig3.pdf", bbox_inches="tight")
-fig.savefig("figures/vector/Fig3.svg", bbox_inches="tight")
+fig.savefig(FIGURES / "Fig3.png", dpi=300, bbox_inches="tight")
+fig.savefig(VECTOR / "Fig3.pdf", bbox_inches="tight")
+fig.savefig(VECTOR / "Fig3.svg", bbox_inches="tight")
 print(f"Fig3 built: cc range [{cc.min():.2f}, {cc.max():.2f}]; "
       f"ANM/PCA fluct n={len(res)} residues {res[0]}-{res[-1]}")

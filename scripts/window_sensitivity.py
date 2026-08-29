@@ -72,6 +72,22 @@ try:
     from pdb_id import validate_pdb_id
 except ModuleNotFoundError:  # imported by path from the repository root
     from scripts.pdb_id import validate_pdb_id
+try:
+    from curation_contracts import (
+        chains_for_exact_accession,
+        choose_primary_chain,
+        describes_ddb1,
+        exact_construct_flags,
+        reference_accessions,
+    )
+except ModuleNotFoundError:  # imported by path from the repository root
+    from scripts.curation_contracts import (
+        chains_for_exact_accession,
+        choose_primary_chain,
+        describes_ddb1,
+        exact_construct_flags,
+        reference_accessions,
+    )
 
 CUTOFF_ANM = 15.0        # A, the primary ANM contact cutoff
 N_MODES = 20             # non-trivial ANM modes retained
@@ -139,14 +155,14 @@ def parse_atom_site(cif):
     return None, []
 
 
-def chain_atoms(pdb, crbn_chains):
+def chain_atoms(pdb, crbn_chains, cif_text=None):
     """{chain: {ca, cab, heavy, altloc_ca, partocc_ca}} over the CRBN chains.
 
     Ca records are taken at FIRST occurrence, which is the repo-wide convention:
     where a residue carries alternate conformations only altloc A is used. The
     altloc and partial-occupancy tallies are reported so the choice is visible.
     """
-    col, rows = parse_atom_site(fetch_cif(pdb))
+    col, rows = parse_atom_site(fetch_cif(pdb) if cif_text is None else cif_text)
     if col is None:
         return {}
     g = lambda f, k: f[col[k]] if k in col else "."
@@ -217,17 +233,11 @@ def rcsb_meta(pdbs, write_cache=True):
 
 
 def accessions(pe):
-    ci = pe["rcsb_polymer_entity_container_identifiers"]
-    return [x["database_accession"]
-            for x in (ci.get("reference_sequence_identifiers") or [])]
+    return sorted(reference_accessions(pe))
 
 
 def crbn_chains_of(e):
-    out = []
-    for pe in e["polymer_entities"]:
-        if "Q96SW2" in accessions(pe):
-            out.extend(pe["rcsb_polymer_entity_container_identifiers"]["auth_asym_ids"])
-    return sorted(set(out))
+    return chains_for_exact_accession(e, "Q96SW2")
 
 
 def method_of(e):
@@ -240,24 +250,9 @@ def resolution_of(e):
     return float(rc[0]) if rc else None
 
 
-def construct_flags(e):
-    """Non-wild-type CRBN construct markers (fusion / point mutation / truncation)."""
-    f = []
-    for pe in e["polymer_entities"]:
-        acc = accessions(pe)
-        desc = pe["rcsb_polymer_entity"]["pdbx_description"] or ""
-        mut = pe["rcsb_polymer_entity"].get("pdbx_mutation")
-        L = pe["entity_poly"]["rcsb_sample_sequence_length"]
-        if "Q96SW2" in acc:
-            if mut:
-                f.append("CRBN_mutation:" + mut)
-            if "," in desc:
-                f.append("CRBN_fusion")
-            if L and L < 400:
-                f.append("CRBN_truncated:%d" % L)
-        elif "Q16531" in acc and "," in desc:
-            f.append("DDB1_chimera")
-    return ";".join(f)
+def construct_flags(e, cif_text):
+    """Exact construct markers from raw UniProt mappings and entity metadata."""
+    return exact_construct_flags(e, cif_text)
 
 
 _SOLVENT = {"HOH", "GOL", "EDO", "SO4", "CL", "NA", "MG", "PO4", "ACT", "DMS",
@@ -289,6 +284,7 @@ def degron_of(e):
 
 def has_ddb1(e):
     return any("Q16531" in accessions(pe) for pe in e["polymer_entities"])
+
 
 # ------------------------------------------------------------------ geometry
 
@@ -497,7 +493,8 @@ def main():
     for k, p in enumerate(pdbs, 1):
         e = meta[p]
         chains = crbn_chains_of(e)
-        atoms = chain_atoms(p, set(chains))
+        cif_text = fetch_cif(p)
+        atoms = chain_atoms(p, set(chains), cif_text)
         per = {}
         for ch in sorted(atoms):
             ca = {r: atoms[ch]["ca"][r] for r in WINSET if r in atoms[ch]["ca"]}
@@ -515,12 +512,17 @@ def main():
             }
         if not per:
             continue
-        primary = CHAIN_MAP[p] if p in CHAIN_MAP and CHAIN_MAP[p] in per else sorted(per)[0]
+        primary = choose_primary_chain(chains, p, CHAIN_MAP)
+        if primary not in per:
+            raise RuntimeError(
+                f"{p}: curated primary CRBN chain {primary} has no parsed coordinate records"
+            )
         best = max(per, key=lambda c: per[c]["cov"])
         S[p] = {"per": per, "primary": primary, "best": best,
                 "method": method_of(e), "resolution": resolution_of(e),
-                "constructs": construct_flags(e), "ligands": ligands_of(e),
+                "constructs": construct_flags(e, cif_text), "ligands": ligands_of(e),
                 "degron": degron_of(e), "ddb1": has_ddb1(e),
+                "ddb1_described": describes_ddb1(e),
                 "space_group": (e.get("symmetry") or {}).get("space_group_name_H_M") or "",
                 "starting_model": ((e.get("refine") or [{}])[0] or {}).get("pdbx_starting_model") or "",
                 "phasing": ((e.get("refine") or [{}])[0] or {}).get("pdbx_method_to_determine_struct") or "",
@@ -684,7 +686,8 @@ def main():
         ("a_paper_rule", dict(rule="a", coverage=1.0)),
         ("b_coverage_95", dict(rule="b", coverage=0.95)),
         ("b_coverage_90", dict(rule="b", coverage=0.90)),
-        ("c_window_retains_open", dict(rule="c", coverage=1.0, drop_residues=(424,))),
+        ("c_drop_424_no_resolution_ceiling",
+         dict(rule="c", coverage=1.0, drop_residues=(424,), res_max=None)),
         ("d_terminal_gaps_only", dict(rule="d", terminal_only=True)),
         ("e_best_covered_chain", dict(rule="e", coverage=1.0, chain="best")),
         ("f_no_resolution_ceiling", dict(rule="f", coverage=1.0, res_max=None)),
@@ -809,6 +812,15 @@ def main():
              "n/a" if constructs["pc1_engineered_closed_mean"] is None
              else "%.3f" % constructs["pc1_engineered_closed_mean"]))
 
+    ddb1_census = {
+        "n_description_mentions": sum(S[p]["ddb1_described"] for p in labels0),
+        "n_exact_q16531": sum(S[p]["ddb1"] for p in labels0),
+        "description_only": sorted(
+            p for p in labels0 if S[p]["ddb1_described"] and not S[p]["ddb1"]
+        ),
+        "absent_by_description": sorted(p for p in labels0 if not S[p]["ddb1_described"]),
+    }
+
     # empty-middle occupancy across every variant
     empty_middle = {}
     for name, v in variants.items():
@@ -851,6 +863,7 @@ def main():
         "superposition_dependence": superposition,
         "method_subsets": method_subsets,
         "constructs": constructs,
+        "ddb1_entity_census": ddb1_census,
         "empty_middle": empty_middle,
     }
     if verify:
@@ -867,6 +880,11 @@ def main():
         assert pa["n_conformers"] == 70 and pa["n_residues"] == 269, \
             (pa["n_conformers"], pa["n_residues"])
         assert pa["n_open"] == 5, pa["n_open"]
+        assert constructs["n_wild_type"] == 12 and constructs["n_engineered"] == 58, constructs
+        assert ddb1_census["n_description_mentions"] == 66, ddb1_census
+        assert ddb1_census["n_exact_q16531"] == 65, ddb1_census
+        assert ddb1_census["description_only"] == ["23SR"], ddb1_census
+        assert len(ddb1_census["absent_by_description"]) == 4, ddb1_census
         assert abs(100 * pa["pc1_variance_fraction"] - 88.3) < 0.5, \
             100 * pa["pc1_variance_fraction"]
         assert abs(pa["anm_mode1_overlap"] - 0.744) < 0.02, pa["anm_mode1_overlap"]
@@ -891,7 +909,7 @@ def main():
         # the same collapse. The assertion therefore requires the headline numbers
         # to survive wherever mode 1 remains delocalised, and requires the
         # collapse to be accompanied by mode-1 localisation where it occurs.
-        for nm in ("b_coverage_95", "b_coverage_90", "c_window_retains_open",
+        for nm in ("b_coverage_95", "b_coverage_90", "c_drop_424_no_resolution_ceiling",
                    "d_terminal_gaps_only", "e_best_covered_chain",
                    "f_no_resolution_ceiling", "g_coverage95_no_res_ceiling"):
             v = variants[nm]
@@ -905,6 +923,8 @@ def main():
             else:
                 assert v["anm_mode1_overlap"] > 0.65, (nm, v["anm_mode1_overlap"])
                 assert v["anm_best_rank"] == 1, (nm, v["anm_best_rank"])
+        assert variants["e_best_covered_chain"]["n_conformers"] == 73, \
+            variants["e_best_covered_chain"]["n_conformers"]
         # The decisive variant: no resolution ceiling and >=95% coverage retains
         # 6BNB and gives SIX open structures. The headline numbers must survive it,
         # because this is the most informative relaxed-membership ensemble.

@@ -222,6 +222,27 @@ NEGATIVE = [
 ]
 
 
+def validate_negative_control_results(results, expected=NEGATIVE):
+    """Require one result for every configured negative control, with no extras."""
+    expected_names = [spec["name"] for spec in expected]
+    actual_names = [row.get("name") for row in results]
+    missing = sorted(set(expected_names) - set(actual_names))
+    unexpected = sorted(set(actual_names) - set(expected_names), key=str)
+    duplicates = sorted({name for name in actual_names if actual_names.count(name) > 1}, key=str)
+    if missing or unexpected or duplicates or len(actual_names) != len(expected_names):
+        raise AssertionError(
+            "full verification requires exactly one result for every configured negative "
+            f"control; missing={missing}, unexpected={unexpected}, duplicates={duplicates}"
+        )
+
+
+def ordinal(value):
+    """Format a rounded percentile with its English ordinal suffix."""
+    n = int(round(value))
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def _window_pair(a, b):
     """Common author residue numbers, as sorted arrays of coordinates."""
     common = sorted(set(a) & set(b))
@@ -468,6 +489,8 @@ def main():
     ap.add_argument("--ndraw", type=int, default=NDRAW)
     ap.add_argument("--resolution-max", type=float, default=RES_MAX)
     args = ap.parse_args()
+    if args.verify and args.skip_negative:
+        ap.error("--verify requires the complete negative-control panel; omit --skip-negative")
     RES_MAX = args.resolution_max
     # Verification may read existing CIF/metadata caches, but cache misses are
     # fetched in memory so the repository remains byte-for-byte untouched.
@@ -495,6 +518,8 @@ def main():
                 negs.append(negative_control(spec, ndraw=args.ndraw))
             except Exception as exc:
                 print(f"  DROPPED {spec['name']}: {type(exc).__name__}: {exc}")
+        if args.verify:
+            validate_negative_control_results(negs)
 
     # ------------------------------------------------------------ discrimination ---
     key = f"mode1_overlap_{CUTOFF:g}A"
@@ -699,7 +724,7 @@ def main():
           f"mode-1 overlap {pos_m1.min():.3f}-{pos_m1.max():.3f} "
           f"(median {np.median(pos_m1):.3f}), rank 1 in {100*(pos_rank==1).mean():.0f}%, "
           f"rank<=3 in {100*(pos_rank<=3).mean():.0f}%")
-    print(f"CRBN {crbn_m1:.3f} sits at the {pct:.0f}th percentile of THIS panel "
+    print(f"CRBN {crbn_m1:.3f} sits at the {ordinal(pct)} percentile of THIS panel "
           f"(textbook cases, not a representative sample)")
     print(f"published anchors: {crbn_m1/LITERATURE_ANCHORS['dobbins_2008_mode1_mean']:.1f}x the "
           f"mode-1 mean of {LITERATURE_ANCHORS['dobbins_2008_mode1_mean']} over "
@@ -763,7 +788,7 @@ def main():
         assert (pos_sub3 >= pos_m1 - 1e-9).all(), "subspace overlap must dominate mode 1"
         print(f"verify OK: {len(rows)} positive controls ({len(clean)} in the primary "
               f"set), {len(negs)} negative controls; CRBN mode-1 {crbn_m1:.3f} at the "
-              f"{pct:.0f}th percentile of literature transitions; the ensemble-level "
+              f"{ordinal(pct)} percentile of literature transitions; the ensemble-level "
               f"criteria separate the classes completely while the single-mode overlap "
               f"does not; resolution-overlap rho {rho_res:+.2f} (p = {p_res:.2f})")
 

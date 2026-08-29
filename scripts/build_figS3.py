@@ -49,8 +49,8 @@ def load_data() -> dict[str, np.ndarray | float | int]:
         raise ValueError("bootstrap arrays contain non-finite values")
     if (variance < 0).any() or (variance > 100).any() or (overlap < 0).any() or (overlap > 1).any():
         raise ValueError("bootstrap values fall outside their defined ranges")
-    if values["n_groups"] != 43:
-        raise ValueError(f"expected 43 publication groups, found {values['n_groups']}")
+    if values["n_groups"] != 38:
+        raise ValueError(f"expected 38 fail-closed publication groups, found {values['n_groups']}")
     return values
 
 
@@ -209,8 +209,9 @@ def main() -> None:
         f"gave a first principal component (PC1) variance fraction of {variance.mean():.0f}% "
         f"(2.5th–97.5th percentile range {variance_low:.0f}–{variance_high:.0f}%) and "
         f"a PC1–axis directional overlap of {overlap.mean():.2f} "
-        f"({overlap_low:.2f}–{overlap_high:.2f}). Five per cent of resamples contained "
-        "no open structure. The black line in panel b marks the single-open-structure "
+        f"({overlap_low:.2f}–{overlap_high:.2f}). "
+        f"In {100.0 * float(values['fraction_without_open']):.1f}% of resamples no open "
+        "structure was represented. The black line in panel b marks the single-open-structure "
         f"anisotropic network model (ANM) mode-1 directional overlap "
         f"({float(values['anm_mode1_overlap']):.2f}). Directional overlap is the absolute "
         "normalised dot product, ranging from 0 for orthogonal directions to 1 for the same axis.",

@@ -13,6 +13,10 @@
 Domain colour code NTD #3b6ea5 / HB #4bab8c / TBD #e07b39. Panel labels (a)-(d).
 Panel d uses the same open/closed encoding as Fig 5: blue = open, orange = closed.
 """
+from figure_package_utils import prepare_figure_dirs
+
+FIGURES, VECTOR, _ = prepare_figure_dirs()
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -150,10 +154,10 @@ axd.legend(frameon=False, fontsize=9.5, loc="upper right")
 axd.spines[["top", "right"]].set_visible(False)
 axd.text(-0.14, 1.05, "(d)", transform=axd.transAxes, fontsize=14, fontweight="bold", va="top", ha="right")
 
-fig.savefig("figures/Fig2.png", dpi=300, bbox_inches="tight")
-fig.savefig("figures/vector/Fig2.pdf", bbox_inches="tight")
-fig.savefig("figures/vector/Fig2.svg", bbox_inches="tight")
-clean_svg("figures/vector/Fig2.svg")
+fig.savefig(FIGURES / "Fig2.png", dpi=300, bbox_inches="tight")
+fig.savefig(VECTOR / "Fig2.pdf", bbox_inches="tight")
+fig.savefig(VECTOR / "Fig2.svg", bbox_inches="tight")
+clean_svg(VECTOR / "Fig2.svg")
 print(f"Fig2 built: open mode1 {open_spec[0]:.3f}; panel-d open best mode "
       f"{int(spec_open.argmax())+1} ({spec_open.max():.2f}), "
       f"closed best mode {int(spec_closed.argmax())+1} ({spec_closed.max():.2f})")

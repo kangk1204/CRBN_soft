@@ -49,11 +49,21 @@ The numerical workflows need a separate CRBN input bundle. Copy its `data/`
 directory into the repository root. Do not place it inside another `data/`
 directory.
 
+This Git repository does not currently contain or link to a downloadable copy
+of that bundle. The repository alone supports the code-only checks in the quick
+start, but it is not a clean-clone numerical reproduction package. To run the
+numerical workflows, use the exact `data/` and `render/` directories distributed
+with the corresponding archived software/data record. If those directories are
+not supplied with the release you received, stop here rather than substituting
+files from a different run.
+
 The layout should begin like this:
 
 ```text
 CRBN_soft/
 ├── data/
+│   ├── curation_study_groups.csv
+│   ├── curation_study_overrides.csv
 │   ├── crbn_ensemble.ens.npz
 │   ├── crbn_residue_window.csv
 │   ├── crbn_curation_log.csv
@@ -70,8 +80,15 @@ Check that the main coordinate file is in the correct place:
 ls data/crbn_ensemble.ens.npz
 ```
 
-If this command prints the file name, the path is correct. Input and generated
-data remain untracked because `data/` is excluded from Git.
+If this command prints the file name, the path is correct. Large input and
+generated data remain untracked under `data/`.
+
+The small `data/curation_study_groups.csv` and
+`data/curation_study_overrides.csv` files are the exceptions: both are tracked.
+The first freezes the RCSB primary-citation DOI snapshot used by this release;
+the second records the manual grouping of missing-DOI deposition series.
+Grouped analyses fail rather than treating a new missing DOI as an independent
+study. The current 70-entry curation resolves to 38 study groups.
 
 ## Run the main analysis
 
@@ -93,6 +110,7 @@ Run the main sensitivity checks:
 ```bash
 python scripts/pairwise_sensitivity.py --verify
 python scripts/study_group_sensitivity.py --verify
+python scripts/pca_robustness.py --verify
 python scripts/anm_null_significance.py --verify
 ```
 
@@ -105,7 +123,7 @@ mmCIF coordinates and can take longer on the first run:
 python scripts/reproduce_tensor.py --verify
 python scripts/reproduce_ensemble.py --verify
 python scripts/sensor_loop_sensitivity.py --verify
-python scripts/assembly_rigid_null.py --write-assembly --verify
+python scripts/assembly_rigid_null.py --verify
 ```
 
 Downloaded coordinate files are stored under `data/_cif_cache/` during normal
@@ -115,8 +133,20 @@ tracked reference files.
 
 ## Create tables and plots
 
-After the input bundle is in place, rebuild the tables and two-dimensional
-plots with:
+After the input bundle is in place, create the required Fig. 4 pocket panel.
+This panel is a mandatory input to `build_fig4.py`, not an optional decoration:
+
+```bash
+conda install -c conda-forge pymol-open-source
+pymol -cq scripts/render_fig4_pocket.py
+```
+
+The renderer requires `render/closed_5fqd_lig.pdb` from the same input bundle
+and writes `figures/panels/render_closed_pocket.png`. If it is missing,
+`build_fig4.py` stops with the generation command instead of producing an
+incomplete figure.
+
+Then rebuild the tables and two-dimensional plots with:
 
 ```bash
 python scripts/build_tables.py
@@ -133,12 +163,11 @@ python scripts/build_figS3.py
 Generated files are written below `figures/` and `study/`. Both directories are
 excluded from Git.
 
-The optional three-dimensional renderers require PyMOL and prepared files in a
-top-level `render/` directory. Install PyMOL separately, then run a renderer, for
-example:
+The Fig. 2 three-dimensional panels are optional placeholders in the composite
+builder. To render them, use PyMOL and the prepared files in the top-level
+`render/` directory:
 
 ```bash
-conda install -c conda-forge pymol-open-source
 pymol -cq scripts/render_fig2_3d.py
 ```
 

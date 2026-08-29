@@ -95,28 +95,38 @@ def internal_rigid_subspace(X, blocks):
     return onb(both - glob @ (glob.T @ both))
 
 
-def connectivity_constrained_subspace(basis, i, j, tol=1e-8):
-    """The sub-subspace of `basis` whose draws leave the chain joined at atoms i and j.
+def equal_displacement_subspace(basis, i, j, tol=1e-8):
+    """Subspace whose draws give the two boundary nodes identical displacement.
 
-    The two-lobe null concedes rigidity inside each block but nothing holds the blocks
-    together, so almost every draw tears the chain apart at the domain boundary (the
-    junction-continuity figures below). Requiring continuity is a LINEAR condition on the
-    coefficient vector c: for a draw v = basis @ c the mismatch at the boundary is
-    v_i - v_j = M c with M = basis[3i:3i+3] - basis[3j:3j+3], a 3 x r matrix. Its null
-    space is the set of internal rigid motions that displace the two boundary atoms
-    identically.
-
-    For the two-block partition this leaves exactly 3 of the 6 dimensions: fixing the
-    NTD+HB block, a TBD motion that keeps residue 318 attached is a rotation about an
-    axis through that residue, and only the axis direction is free. The null therefore
-    concedes rigidity AND connectivity and leaves only the choice of hinge axis, which is
-    precisely what the elastic-network model is being credited with selecting.
-
-    It is a strictly harder test than the unconstrained one: the surviving directions are
-    the ones that most resemble the observed transition, so the null becomes more
-    competitive rather than less.
+    For ``v = basis @ c``, equality is the three-component linear condition
+    ``v_i - v_j = 0``. It leaves three of the six two-block dimensions. This is
+    intentionally named for what it imposes: it preserves boundary bond length and
+    freezes boundary bond orientation to first order. It is therefore stronger than
+    the one-component bond-length condition below.
     """
     M = basis[3 * i:3 * i + 3, :] - basis[3 * j:3 * j + 3, :]
+    _, S, Vt = np.linalg.svd(M)
+    rank = int((S > tol * S.max()).sum()) if S.size and S.max() > 0 else 0
+    return basis @ Vt[rank:].T
+
+
+def bond_length_preserving_subspace(basis, coords, i, j, tol=1e-8):
+    """Subspace preserving the 317-318 bond length to first order.
+
+    For boundary unit vector ``e``, first-order bond extension is
+    ``e . (u_j - u_i)``. Setting this scalar to zero leaves five of the six
+    two-block internal degrees of freedom. This is the literal first-order bond-length
+    constraint; equal displacement is a stronger three-component condition
+    that also freezes the bond's instantaneous orientation.
+    """
+    e = coords[j] - coords[i]
+    distance = np.linalg.norm(e)
+    if distance <= tol:
+        raise ValueError("boundary nodes must have distinct coordinates")
+    e = e / distance
+    M = e.reshape(1, 3) @ (
+        basis[3 * j:3 * j + 3, :] - basis[3 * i:3 * i + 3, :]
+    )
     _, S, Vt = np.linalg.svd(M)
     rank = int((S > tol * S.max()).sum()) if S.size and S.max() > 0 else 0
     return basis @ Vt[rank:].T
@@ -163,12 +173,42 @@ def main():
 
     window = np.array([int(r["author_resnum"]) for r in
                        csv.DictReader(open("data/crbn_residue_window.csv"))])
-    dvec = np.load("data/pca_diffvec.npz")["diff_vec"]
-    dvec = dvec / np.linalg.norm(dvec)
-    V = np.load("data/crbn_anm_modes.npz")["anm_eigvecs"]
+    diff_artifact = np.load("data/pca_diffvec.npz", allow_pickle=False)
+    mode_artifact = np.load("data/crbn_anm_modes.npz", allow_pickle=False)
+    V = np.asarray(mode_artifact["anm_eigvecs"])
     ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
-    labels = [str(x) for x in ens["_labels"]]
-    Xmono = ens["_confs"][labels.index("8CVP")]           # 269 Ca, ensemble frame
+    required_ensemble = {"_confs", "_labels"}
+    required_difference = {"labels", "open_mask", "diff_vec"}
+    if not required_ensemble.issubset(ens.files) or not required_difference.issubset(diff_artifact.files):
+        raise ValueError("ensemble or difference artifact is missing required arrays")
+    conformers = np.asarray(ens["_confs"])
+    ensemble_labels = np.asarray(ens["_labels"])
+    difference_labels = np.asarray(diff_artifact["labels"])
+    if conformers.ndim != 3 or conformers.shape[2] != 3:
+        raise ValueError(f"invalid ensemble coordinate shape: {conformers.shape}")
+    if ensemble_labels.shape != (conformers.shape[0],) or not np.array_equal(
+        ensemble_labels, difference_labels
+    ):
+        raise ValueError("difference-artifact labels do not match ensemble label order")
+    open_mask = np.asarray(diff_artifact["open_mask"])
+    if open_mask.dtype.kind != "b" or open_mask.shape != ensemble_labels.shape:
+        raise ValueError("difference-artifact open_mask is not a matching boolean vector")
+    if int(open_mask.sum()) != 5 or not np.isfinite(conformers).all():
+        raise ValueError("ensemble must contain finite coordinates and exactly five open conformers")
+    dvec = np.asarray(diff_artifact["diff_vec"], dtype=float)
+    if dvec.shape != (conformers.shape[1] * 3,) or not np.isfinite(dvec).all():
+        raise ValueError(f"invalid difference-axis shape: {dvec.shape}")
+    dnorm = float(np.linalg.norm(dvec))
+    if not np.isclose(dnorm, 1.0, atol=1e-10, rtol=0.0):
+        raise ValueError(f"difference axis is not unit length: {dnorm}")
+    if V.shape[0] != dvec.size or V.shape[1] < NMODE or not np.isfinite(V).all():
+        raise ValueError(f"ANM basis is incompatible with the difference axis: {V.shape}")
+    if "resnums" not in mode_artifact.files or not np.array_equal(mode_artifact["resnums"], window):
+        raise ValueError("ANM residue labels do not match the analysis-window order")
+    labels = [str(value) for value in ensemble_labels]
+    if len(labels) != len(set(labels)) or labels.count("8CVP") != 1:
+        raise ValueError("ensemble labels must be unique and contain exactly one 8CVP")
+    Xmono = conformers[labels.index("8CVP")]               # 269 Ca, ensemble frame
 
     # ---- (1) the same network, built on the assembly that was actually deposited ------
     tag, Xa = read_ca_pdb("render/open_8cvp_assembly.pdb")
@@ -185,25 +225,21 @@ def main():
     fit_rmsd = float(np.sqrt((((P @ R.T) - Q) ** 2).sum(1).mean()))
     Xa = (Xa - Xa[sel].mean(0)) @ R.T
 
-    # What ARE the modes below the transition in the assembly? Earlier notes asserted an
-    # answer twice before computing one, and was wrong both times: first that all four are
-    # the partner's own motions, then that none of them is. The decomposition below is the
-    # quantity that settles it -- modes 1-3 are two-body wobble, mode 4 is the partner
-    # deforming, and the partner deforms about twice as much as CRBN throughout.
-    crbn_mask = np.zeros(len(tag), bool); crbn_mask[sel] = True
+    # Characterise both proteins on comparable full-chain node sets. The 269-node window
+    # remains the scoring basis because that is where the transition axis is defined, but
+    # internal-deformation and amplitude fractions use all deposited Ca atoms of CRBN and
+    # DDB1 and therefore partition this two-chain assembly exactly.
+    crbn_mask = np.array([c == "B" for c, _ in tag])
     ddb1_mask = np.array([c == "A" for c, _ in tag])
+    assert np.all(crbn_mask | ddb1_mask), "8CVP reference must contain only CRBN and DDB1"
     two_body = onb(np.hstack([rigid_dof(Xa, crbn_mask), rigid_dof(Xa, ddb1_mask)]))
 
     def mode_character(vec):
         """How a joint mode divides into two-body rigid wobble vs internal deformation.
 
-        NOTE ON BASIS. crbn_mask covers only the 269-residue analysis window, while
-        ddb1_mask covers all 1135 deposited DDB1 Ca. The two masks therefore do not
-        partition the assembly: the 80 CRBN Ca outside the window belong to neither, so
-        amplitude_on_crbn**2 + amplitude_on_ddb1**2 < 1 (0.77 for mode 1). Each amplitude
-        is the fraction of the mode's norm carried by that subset, and the two internal
-        deformation measures are taken on those same different bases. The window is used
-        for CRBN because that is the node set the transition axis is defined on.
+        Both masks cover the complete deposited chains (349 CRBN and 1,135 DDB1 Ca), so
+        amplitudes and internal-deformation fractions are directly comparable and the
+        squared amplitudes sum to one up to floating-point error.
         """
         f = vec / np.linalg.norm(vec)
         rigid_frac = float(np.linalg.norm(two_body.T @ f))
@@ -255,22 +291,7 @@ def main():
 
     obs = float(abs(V[:, 0] @ dvec))
 
-    def draw_null(basis, seed):
-        """Uniform directions on the unit sphere of an internal rigid subspace.
-
-        The subspace already has the whole-molecule translations and rotations projected
-        out (see internal_rigid_subspace), so every draw is a genuine internal hinge
-        motion rather than a rotation of the entire protein. Leakage onto the global
-        block is ~1e-16.
-        """
-        proj = basis.T @ dvec
-        rng = np.random.default_rng(seed)
-        r = rng.standard_normal((NDRAW, basis.shape[1]))
-        r /= np.linalg.norm(r, axis=1, keepdims=True)
-        vals = np.abs(r @ proj)
-        return proj, vals
-
-    def p_value(null_vals):
+    def p_value(null_vals, observed):
         """Add-one empirical tail, matching softmode_lib.null_summary.
 
         The two conventions were mixed across the repository: this file used the raw
@@ -278,32 +299,69 @@ def main():
         two agree far beyond the reported precision, but the raw form can report p = 0 from
         a finite sample, which is never the right claim. Use one convention everywhere.
         """
-        return float((int((null_vals >= obs).sum()) + 1) / (null_vals.size + 1))
+        return float((int((null_vals >= observed).sum()) + 1) / (null_vals.size + 1))
+
+    def direction_null(basis, seed):
+        """Compare the projected mode and transition in the same unit-sphere sample space."""
+        mode_coeff = basis.T @ V[:, 0]
+        axis_coeff = basis.T @ dvec
+        mode_content = float(np.linalg.norm(mode_coeff))
+        axis_capture = float(np.linalg.norm(axis_coeff))
+        if mode_content <= 1e-12 or axis_capture <= 1e-12:
+            raise ValueError("mode or transition has zero projection in a null subspace")
+        mode_unit = mode_coeff / mode_content
+        axis_unit = axis_coeff / axis_capture
+        observed_direction = float(abs(mode_unit @ axis_unit))
+        projected_overlap = float(abs((basis @ mode_unit) @ dvec))
+        rng = np.random.default_rng(seed)
+        draws = rng.standard_normal((NDRAW, basis.shape[1]))
+        draws /= np.linalg.norm(draws, axis=1, keepdims=True)
+        null_values = np.abs(draws @ axis_unit)
+        null_sd = float(null_values.std(ddof=1))
+        result = {
+            "internal_dim": int(basis.shape[1]),
+            "observed_direction_cosine_in_subspace": observed_direction,
+            "observed_projected_mode1_overlap": projected_overlap,
+            "anm_mode1_content": mode_content,
+            "subspace_capture_of_transition": axis_capture,
+            "p_empirical": p_value(null_values, observed_direction),
+            "z": float((observed_direction - null_values.mean()) / null_sd),
+            "null_mean": float(null_values.mean()),
+            "null_sd": null_sd,
+            "null_p95": float(np.percentile(null_values, 95)),
+            "null_max": float(null_values.max()),
+        }
+        return result, axis_unit, null_values
 
     # Both parameterisations are reported. They answer different questions and they do not
     # agree: how surprising the alignment looks depends on how many hinges the null is
     # allowed. Quoting only the more favourable one would be the same error this analysis
     # was introduced to correct.
-    dproj, null = draw_null(two, SEED)
-    dhat = dproj / np.linalg.norm(dproj)
-    p_rigid = p_value(null)
-    _, null3 = draw_null(three, SEED + 1)
-    p_rigid3 = p_value(null3)
-
-    def zscore(v):
-        return float((obs - v.mean()) / v.std(ddof=1))
+    two_null, two_axis_unit, null = direction_null(two, SEED)
+    three_null, _, null3 = direction_null(three, SEED + 1)
+    p_rigid = two_null["p_empirical"]
+    p_rigid3 = three_null["p_empirical"]
 
     # The third null: rigid blocks that also stay joined at the domain boundary. The
     # Earlier notes stated that such a null "would be stricter still" and that we had
     # not constructed one. It is constructed here, and it is stricter: p rises rather
     # than falls, because constraining the draws to continuous motions leaves only the
     # directions that already resemble the transition.
-    junction = np.argsort(np.abs(window - HB_TBD))[:2]
-    cont = connectivity_constrained_subspace(two, int(junction[0]), int(junction[1]))
-    cap_cont = float(np.linalg.norm(cont.T @ dvec))
-    _, null_cont = draw_null(cont, SEED + 3)
-    p_cont = p_value(null_cont)
-    mode1_cont = float(np.linalg.norm(cont.T @ V[:, 0]))
+    index_317 = np.where(window == 317)[0]
+    index_318 = np.where(window == 318)[0]
+    if index_317.size != 1 or index_318.size != 1:
+        raise ValueError("analysis window must contain unique boundary residues 317 and 318")
+    junction = np.array([int(index_317[0]), int(index_318[0])])
+    cont = equal_displacement_subspace(two, int(junction[0]), int(junction[1]))
+    equal_null, _, null_cont = direction_null(cont, SEED + 3)
+    cap_cont = equal_null["subspace_capture_of_transition"]
+    p_cont = equal_null["p_empirical"]
+    bond = bond_length_preserving_subspace(
+        two, Xmono, int(junction[0]), int(junction[1])
+    )
+    bond_null, _, null_bond = direction_null(bond, SEED + 4)
+    cap_bond = bond_null["subspace_capture_of_transition"]
+    p_bond = bond_null["p_empirical"]
 
     # A random draw in either subspace is a rigid motion of each block, but nothing forces
     # the blocks to stay in contact: most draws pull the domains apart at the boundary. The
@@ -327,19 +385,27 @@ def main():
         p = two.T @ V[:, m]
         rc = float(np.linalg.norm(p))
         per_mode.append({"mode": m + 1, "rigid_content": rc,
-                         "direction_cosine_in_rigid_subspace": float(abs(p @ dhat) / rc) if rc > 1e-9 else 0.0,
+                         "direction_cosine_in_rigid_subspace":
+                             float(abs(p @ two_axis_unit) / rc) if rc > 1e-9 else 0.0,
                          "overlap_with_axis": float(abs(V[:, m] @ dvec))})
     print(f"\nrigid interdomain subspace captures the transition at projection norm {cap2:.3f} "
           f"(3 blocks {cap3:.3f}); ANM top-10 cumulative = {cum10:.3f}")
-    print(f"two-lobe   (dim {two.shape[1]:2d}): observed {obs:.3f}, p = {p_rigid:.4f}, "
-          f"z = {zscore(null):.2f} (null mean {null.mean():.3f}, "
+    print(f"two-lobe   (dim {two.shape[1]:2d}): in-subspace cosine "
+          f"{two_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_rigid:.4f}, "
+          f"z = {two_null['z']:.2f} (null mean {null.mean():.3f}, "
           f"p95 {np.percentile(null, 95):.3f})")
-    print(f"three-body (dim {three.shape[1]:2d}): observed {obs:.3f}, p = {p_rigid3:.4f}, "
-          f"z = {zscore(null3):.2f} (null mean {null3.mean():.3f}, "
+    print(f"three-body (dim {three.shape[1]:2d}): in-subspace cosine "
+          f"{three_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_rigid3:.4f}, "
+          f"z = {three_null['z']:.2f} (null mean {null3.mean():.3f}, "
           f"p95 {np.percentile(null3, 95):.3f})")
-    print(f"continuity-constrained (dim {cont.shape[1]:2d}): observed {obs:.3f}, "
-          f"p = {p_cont:.4f}, z = {zscore(null_cont):.2f} (subspace captures the "
+    print(f"equal-displacement boundary (dim {cont.shape[1]:2d}): in-subspace cosine "
+          f"{equal_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_cont:.4f}, "
+          f"z = {equal_null['z']:.2f} (subspace captures the "
           f"transition at {cap_cont:.3f}; null mean {null_cont.mean():.3f})")
+    print(f"bond-length-preserving boundary (dim {bond.shape[1]:2d}): in-subspace cosine "
+          f"{bond_null['observed_direction_cosine_in_subspace']:.3f}, p = {p_bond:.4f}, "
+          f"z = {bond_null['z']:.2f} (subspace captures the "
+          f"transition at {cap_bond:.3f}; null mean {null_bond.mean():.3f})")
     print(f"junction continuity: observed {obs_disc:.4f}, null median "
           f"{np.median(null_disc):.4f}; {frac_as_continuous*100:.2f}% of draws are as "
           f"continuous as the observed transition")
@@ -352,6 +418,8 @@ def main():
         "assembly": {
             "structure": "8CVP as deposited (chain A DDB1 + chain B CRBN)",
             "n_ca": len(tag), "n_ca_crbn_window": len(sel),
+            "n_ca_crbn_full": int(crbn_mask.sum()),
+            "n_ca_ddb1_full": int(ddb1_mask.sum()),
             "window_fit_rmsd_A": fit_rmsd,
             "by_cutoff": assembly,
             "slow_mode_character_15A": slow_character,
@@ -363,37 +431,21 @@ def main():
             "anm_top10_cumulative": cum10,
             "observed_mode1_overlap": obs,
             # Both parameterisations, because the answer depends on which one is used.
-            "two_block": {
-                "internal_dim": int(two.shape[1]),
-                "p_empirical": p_rigid, "z": zscore(null),
-                "null_mean": float(null.mean()), "null_sd": float(null.std(ddof=1)),
-                "null_p95": float(np.percentile(null, 95)),
-                "null_max": float(null.max()),
-            },
-            "three_block": {
-                "internal_dim": int(three.shape[1]),
-                "p_empirical": p_rigid3, "z": zscore(null3),
-                "null_mean": float(null3.mean()), "null_sd": float(null3.std(ddof=1)),
-                "null_p95": float(np.percentile(null3, 95)),
-                "null_max": float(null3.max()),
-            },
-            # The strictest of the three: rigid blocks AND a chain that stays joined.
-            "connectivity_constrained": {
-                "internal_dim": int(cont.shape[1]),
-                "subspace_capture_of_transition": cap_cont,
-                "anm_mode1_content": mode1_cont,
-                "p_empirical": p_cont, "z": zscore(null_cont),
-                "null_mean": float(null_cont.mean()),
-                "null_sd": float(null_cont.std(ddof=1)),
-                "null_p95": float(np.percentile(null_cont, 95)),
-                "null_max": float(null_cont.max()),
-                "note": ("Draws are rigid within each block and displace the two residues "
-                         "flanking the HB-TBD boundary identically, so they are rotations "
-                         "of the TBD about an axis through the junction and only the axis "
-                         "direction is free. This concedes everything the elastic-network "
-                         "model is credited with except axis selection, and it is a harder "
-                         "test than the unconstrained two-lobe null, not an easier one."),
-            },
+            "two_block": two_null,
+            "three_block": three_null,
+            # A strong three-component boundary condition: equal displacement freezes
+            # both first-order bond extension and instantaneous bond reorientation.
+            "equal_displacement_boundary": dict(equal_null, **{
+                "note": ("This imposes u317 = u318 (three scalar constraints). It is "
+                         "stronger than preserving chain connectivity: it also "
+                         "freezes the boundary bond orientation to first order."),
+            }),
+            # Literal first-order bond-length sensitivity: one scalar constraint.
+            "bond_length_preserving_boundary": dict(bond_null, **{
+                "note": ("This imposes e317-318 dot (u318-u317) = 0 (one scalar "
+                         "constraint), preserving boundary bond length to first order "
+                         "while allowing bond reorientation."),
+            }),
             "junction_continuity": {
                 "observed": obs_disc,
                 "null_median": float(np.median(null_disc)),
@@ -406,12 +458,18 @@ def main():
             },
             # kept for backward compatibility with the two-lobe-only reporting
             "p_random_rigid_direction": p_rigid,
-            "null_mean": float(null.mean()),
-            "null_p95": float(np.percentile(null, 95)),
+            "null_mean": two_null["null_mean"],
+            "null_p95": two_null["null_p95"],
             "n_draws": NDRAW, "seed": SEED,
             "per_mode": per_mode,
         },
     }
+    # Compatibility alias for older figure/table readers. New reporting must use the
+    # explicit equal-displacement name above rather than calling it merely joined.
+    out["rigid_domain_null"]["connectivity_constrained"] = dict(
+        out["rigid_domain_null"]["equal_displacement_boundary"]
+    )
+    out["rigid_domain_null"]["connectivity_constrained"]["deprecated_alias"] = True
     if "--verify" not in sys.argv:
         with open("data/assembly_rigid_null.json", "w") as fh:
             json.dump(out, fh, indent=1)
@@ -440,10 +498,34 @@ def main():
         same("anm_top10_cumulative", cum10, crd.get("anm_top10_cumulative"))
         same("two_block p", p_rigid, crd.get("two_block", {}).get("p_empirical"))
         same("three_block p", p_rigid3, crd.get("three_block", {}).get("p_empirical"))
-        same("connectivity p", p_cont,
-             crd.get("connectivity_constrained", {}).get("p_empirical"))
-        same("connectivity capture", cap_cont,
-             crd.get("connectivity_constrained", {}).get("subspace_capture_of_transition"))
+        same("equal-displacement p", p_cont,
+             crd.get("equal_displacement_boundary", {}).get("p_empirical"))
+        same("equal-displacement capture", cap_cont,
+             crd.get("equal_displacement_boundary", {}).get("subspace_capture_of_transition"))
+        same("bond-length-preserving p", p_bond,
+             crd.get("bond_length_preserving_boundary", {}).get("p_empirical"))
+        same("bond-length-preserving capture", cap_bond,
+             crd.get("bond_length_preserving_boundary", {}).get("subspace_capture_of_transition"))
+        for model_name, recomputed in (
+            ("two_block", two_null),
+            ("three_block", three_null),
+            ("bond_length_preserving_boundary", bond_null),
+            ("equal_displacement_boundary", equal_null),
+        ):
+            committed_model = crd.get(model_name, {})
+            for field in (
+                "observed_direction_cosine_in_subspace",
+                "observed_projected_mode1_overlap",
+                "anm_mode1_content",
+                "subspace_capture_of_transition",
+                "p_empirical",
+                "z",
+                "null_mean",
+                "null_sd",
+                "null_p95",
+                "null_max",
+            ):
+                same(f"{model_name} {field}", recomputed[field], committed_model.get(field))
         for m, d in enumerate(crd.get("per_mode", [])):
             same(f"mode {m+1} direction cosine",
                  per_mode[m]["direction_cosine_in_rigid_subspace"],
@@ -470,15 +552,18 @@ def main():
         assert 0.9 < cap2 < 0.95, cap2
         assert 0.01 < p_rigid < 0.06, p_rigid
         assert cont.shape[1] == 3, cont.shape          # rotation axis through the junction
+        assert bond.shape[1] == 5, bond.shape          # one scalar bond-extension constraint
         assert p_cont > p_rigid, (p_cont, p_rigid)     # the constrained null is harder
+        assert p_rigid < p_bond < p_cont, (p_rigid, p_bond, p_cont)
         assert per_mode[0]["direction_cosine_in_rigid_subspace"] > 0.75
         assert max(d["direction_cosine_in_rigid_subspace"] for d in per_mode[1:]) < 0.35
         assert min(d["rigid_content"] for d in per_mode[:3]) > 0.7
         print("\nverify OK: in the deposited assembly the axis is not mode 1; the rigid "
               "interdomain subspace outperforms ten ANM modes; and within it only mode 1 "
               "points along the transition. The unconstrained two-lobe null gives "
-              f"p = {p_rigid:.3f}, but the strict joined-chain null gives "
-              f"p = {p_cont:.3f}; the claim rests on mode ordering, not significance.")
+              f"p = {p_rigid:.3f}; the bond-length-preserving boundary gives "
+              f"p = {p_bond:.3f}; the stronger equal-displacement boundary gives "
+              f"p = {p_cont:.3f}. The conclusion rests on mode ordering, not significance.")
     return 0
 
 

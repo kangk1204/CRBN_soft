@@ -8,6 +8,10 @@ five-open/65-closed axis:
 Panel c cumulative curve starts at the canonical mode-1 overlap 0.744.
 """
 import json
+from figure_package_utils import prepare_figure_dirs
+
+FIGURES, VECTOR, _ = prepare_figure_dirs()
+
 import numpy as np, csv
 import matplotlib
 matplotlib.use("Agg")
@@ -17,7 +21,7 @@ from matplotlib.gridspec import GridSpec
 C_APO   = "#3b6ea5"      # genuine-apo — blue
 C_DRUG  = "#e07b39"      # drug-conditioned — orange
 C_NATIVE= "#4bab8c"      # native-substrate (9NR3) — green
-FOCAL   = "#d1492b"
+FOCAL   = "#6f4e9c"      # purple focal accent; avoids a red/green pairing
 GREY    = "#9aa0a6"
 
 
@@ -109,7 +113,7 @@ axd.hist(_norm[open_mask],  bins=bins, color=C_APO,  alpha=0.95, label=f"open (n
 # The band is the artifact's own 15-85% window between the clusters, not a hardcoded
 # interval. A band chosen inside the largest gap is empty by construction; this one is
 # derived from the data so the emptiness is a statement about the data.
-_em = json.load(open("data/window_sensitivity.json", encoding="utf-8"))["empty_middle"]["a_primaryer_rule"]
+_em = json.load(open("data/window_sensitivity.json", encoding="utf-8"))["empty_middle"]["a_paper_rule"]
 axd.axvspan(*_em["band_15_85_pct"], color="#dddddd", alpha=0.5, lw=0)
 axd.text(0.6, 0.45, "no structures\n(empty middle)", transform=axd.get_xaxis_transform(),
          ha="center", va="center", fontsize=7.5, color="#888888")
@@ -122,8 +126,8 @@ axd.set_xlim(-0.2, 1.15)
 for ax, l in [(axa,"a"),(axb,"b"),(axc,"c"),(axd,"d")]:
     ax.text(-0.14, 1.06, f"({l})", transform=ax.transAxes, fontsize=9, fontweight="bold", va="top", ha="right")
 
-fig.savefig("figures/Fig1.png", dpi=300, bbox_inches="tight")
-fig.savefig("figures/vector/Fig1.pdf", bbox_inches="tight")
-fig.savefig("figures/vector/Fig1.svg", bbox_inches="tight")
-clean_svg("figures/vector/Fig1.svg")
+fig.savefig(FIGURES / "Fig1.png", dpi=300, bbox_inches="tight")
+fig.savefig(VECTOR / "Fig1.pdf", bbox_inches="tight")
+fig.savefig(VECTOR / "Fig1.svg", bbox_inches="tight")
+clean_svg(VECTOR / "Fig1.svg")
 print(f"Fig1 built: PC1 {vr[0]*100:.1f}%, cum[0]={cum[0]:.4f}, cum[9]={cum[9]:.4f}, RMSIP {rmsip:.3f}")

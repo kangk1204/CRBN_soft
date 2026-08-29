@@ -14,6 +14,8 @@ import csv, json, subprocess, sys
 from pathlib import Path
 import numpy as np
 
+from figure_package_utils import require_rigid_null_schema
+
 ROOT = Path(__file__).resolve().parent.parent
 D = ROOT / "data"
 TAB = ROOT / "study" / "tables"
@@ -85,8 +87,26 @@ per_structure_rank_note = (
 # study-level and per-pair sensitivities, and the size-matched nulls
 sg = json.load(open(D / "study_group_sensitivity.json"))
 pw = json.load(open(D / "pairwise_sensitivity.json"))["per_pair_mode1_overlap"]
-ctx = json.load(open(D / "context_stats.json")) if (D / "context_stats.json").exists() else {}
-arn = json.load(open(D / "assembly_rigid_null.json")) if (D / "assembly_rigid_null.json").exists() else {}
+try:
+    ctx = json.load(open(D / "context_stats.json"))
+except (FileNotFoundError, json.JSONDecodeError) as exc:
+    raise RuntimeError(
+        "data/context_stats.json is missing or invalid; rebuild it with: "
+        "python scripts/context_stats.py"
+    ) from exc
+try:
+    arn = json.load(open(D / "assembly_rigid_null.json"))
+except (FileNotFoundError, json.JSONDecodeError) as exc:
+    raise RuntimeError(
+        "data/assembly_rigid_null.json is missing or invalid; rebuild it with: "
+        "python scripts/assembly_rigid_null.py"
+    ) from exc
+rigid_null = require_rigid_null_schema(arn)
+study_assoc = ctx.get("fisher_study_level", {})
+equal_boundary = rigid_null["equal_displacement_boundary"]
+bond_boundary = rigid_null["bond_length_preserving_boundary"]
+two_boundary = rigid_null["two_block"]
+three_boundary = rigid_null["three_block"]
 
 # ---- Table 1: key quantitative results ----
 t1 = [
@@ -104,75 +124,78 @@ t1 = [
      f"{open_lo:.2f}–{open_hi:.2f}",
      f"{n_open} open-structure ANMs; 15 Å cutoff; {per_structure_rank_note}"),
     ("Open-only node set (349 Cα of 8CVP)",
-     f"{ctx['open_only_node_set']['mode1_overlap']:.2f}" if ctx else "0.61",
+     f"{ctx['open_only_node_set']['mode1_overlap']:.2f}",
      "mode-1 directional overlap; rank 1; window not fixed by the closed set"),
     ("Agreement between ANM and PCA motion subspaces (RMSIP)", f"{rmsip:.2f}",
      ("root-mean-square inner product for two 10-dimensional subspaces; random subspaces give "
       f"{ctx['rmsip_random_subspace_null']['mean']:.3f} ± "
-      f"{ctx['rmsip_random_subspace_null']['sd']:.3f}" if ctx
-      else "root-mean-square inner product; random subspaces give 0.111 ± 0.008")),
+      f"{ctx['rmsip_random_subspace_null']['sd']:.3f}")),
     ("Cumulative overlap (top 10 modes)", f"{cum10:.3f}",
      "projection norm of the axis in the ten-mode subspace"),
     ("Calibration", "", ""),
     ("Two-block rigid-motion subspace",
-     f"{arn['rigid_domain_null']['two_block_capture']:.2f}" if arn else "0.93",
+     f"{two_boundary['subspace_capture_of_transition']:.2f}",
      "projection norm of the open-to-closed axis; geometric upper bound without an elastic-network model"),
     ("Mode-1 directional overlap within rigid-motion space",
-     f"{arn['rigid_domain_null']['per_mode'][0]['direction_cosine_in_rigid_subspace']:.2f}" if arn else "0.81",
+     f"{rigid_null['per_mode'][0]['direction_cosine_in_rigid_subspace']:.2f}",
      "modes 2, 3 give 0.24, 0.11 at comparable rigid content"),
     # Both parameterisations, because the significance depends on how many hinges the null
     # is granted and quoting only one would misrepresent the strength of the result.
     ("Random rigid interdomain direction, two lobes",
-     f"p = {arn['rigid_domain_null']['two_block']['p_empirical']:.3f}" if arn else "p = 0.030",
-     (f"z = {arn['rigid_domain_null']['two_block']['z']:.2f}; "
-      f"{arn['rigid_domain_null']['n_draws']:,} draws; the partition the reported hinge implies")
-     if arn else "the null the reported hinge implies"),
+     f"p = {two_boundary['p_empirical']:.3f}",
+     (f"matched projected overlap {two_boundary['observed_projected_mode1_overlap']:.2f}; "
+      f"direction cosine in subspace {two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {two_boundary['z']:.2f}; {rigid_null['n_draws']:,} draws; the partition "
+      "the reported hinge implies")),
     ("Random rigid interdomain direction, three domains",
-     f"p = {arn['rigid_domain_null']['three_block']['p_empirical']:.4f}" if arn else "p = 0.0012",
-     (f"z = {arn['rigid_domain_null']['three_block']['z']:.2f}; same draws, one more hinge allowed")
-     if arn else "one more hinge allowed"),
-    # The strictest of the three: the observed overlap does not clear it. Reporting only
-    # the two that it clears would be exactly the selection this table exists to prevent.
-    ("Random rigid direction, chain kept joined",
-     f"p = {arn['rigid_domain_null']['connectivity_constrained']['p_empirical']:.2f}"
-     if arn else "p = 0.16",
-     (f"z = {arn['rigid_domain_null']['connectivity_constrained']['z']:.2f}; "
-      f"{'three' if arn['rigid_domain_null']['connectivity_constrained']['internal_dim'] == 3 else arn['rigid_domain_null']['connectivity_constrained']['internal_dim']}-dimensional "
-      f"hinge-axis subspace; transition projection norm "
-      f"{arn['rigid_domain_null']['connectivity_constrained']['subspace_capture_of_transition']:.2f}; "
-      "most restrictive null")
-     if arn else "three-dimensional hinge-axis subspace; transition projection norm 0.89; most restrictive null"),
-    ("Axis rank in the CRBN-DDB1 assembly",
-     f"mode {arn['assembly']['by_cutoff']['15.0']['best_mode_rank']}" if arn else "mode 5",
+     f"p = {three_boundary['p_empirical']:.3f}",
+     (f"matched projected overlap {three_boundary['observed_projected_mode1_overlap']:.2f}; "
+      f"direction cosine in subspace {three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {three_boundary['z']:.2f}; same draws, one more hinge allowed")),
+    ("Random rigid direction, boundary bond length preserved",
+     f"p = {bond_boundary['p_empirical']:.3f}",
+     (f"z = {bond_boundary['z']:.2f}; five-dimensional subspace; deposited-displacement "
+      f"projection norm {bond_boundary['subspace_capture_of_transition']:.2f}; one scalar "
+      f"first-order bond-extension constraint; matched projected overlap "
+      f"{bond_boundary['observed_projected_mode1_overlap']:.2f}; direction cosine in subspace "
+      f"{bond_boundary['observed_direction_cosine_in_subspace']:.2f}")),
+    ("Random rigid direction, equal boundary displacement",
+     f"p = {equal_boundary['p_empirical']:.3f}",
+     (f"z = {equal_boundary['z']:.2f}; three-dimensional subspace; deposited-displacement "
+      f"projection norm {equal_boundary['subspace_capture_of_transition']:.2f}; stronger "
+      f"three-component condition that also freezes bond reorientation; matched projected "
+      f"overlap {equal_boundary['observed_projected_mode1_overlap']:.2f}; direction cosine "
+      f"in subspace {equal_boundary['observed_direction_cosine_in_subspace']:.2f}")),
+    ("Axis rank in the CRBN–DDB1 assembly",
+     f"mode {arn['assembly']['by_cutoff']['15.0']['best_mode_rank']}",
      (f"directional overlap {arn['assembly']['by_cutoff']['15.0']['best_overlap']:.2f}; mode 1 gives "
       f"{arn['assembly']['by_cutoff']['15.0']['mode1_overlap']:.2f}; modes 1–3 are mainly two-body "
-      f"motion, whereas mode 4 deforms DDB1 more than CRBN")
-     if arn else "modes 1–3 are mainly two-body motion; mode 4 deforms DDB1 more than CRBN"),
+      f"motion, whereas mode 4 deforms DDB1 more than CRBN")),
     ("Higher-mode (4–20) comparison", f"z = {hm['z']:.1f}",
      "observed overlap exceeds this baseline; the baseline is not hinge-geometry-specific"),
     ("Full-space isotropic null",
-     f"p = {sci(ctx['isotropic_null_exact_tail']['p_exact']) if ctx else '2 × 10⁻¹⁴³'}",
+     f"p = {sci(ctx['isotropic_null_exact_tail']['p_exact'])}",
      "observed overlap exceeds this baseline; the baseline is not hinge-geometry-specific"),
     ("Robustness", "", ""),
     ("Leave-one-closed-out (n=65)", f"{loc['min']:.3f}–{loc['max']:.3f}",
      "directional-overlap range"),
     ("Leave-one-open-out (n=5)", f"{loo['min']:.3f}–{loo['max']:.3f}",
      "directional-overlap range"),
-    (f"Study-equal weighting ({sg['n_study_groups']} groups)",
+    (f"Publication-group-equal weighting ({sg['n_study_groups']} groups)",
      f"{sg['study_weighted_overlap']:.3f}", f"directional overlap; rank {sg['study_weighted_rank']}"),
     (f"Per-pair ({pw['n_pairs']} open-closed pairs)", f"{pw['min']:.3f}–{pw['max']:.3f}",
      "directional-overlap range; rank 1 for every pair"),
     ("Structure-ligand association", "", ""),
     # The entry-level p treats three conformers from one publication as three independent
-    # observations, so it belongs in the counts column as a tabulation, not in the value
-    # column as a result. The analysis-clustered test is the inferential one.
+    # observations, so it belongs in the notes as a descriptive tabulation. An independent
+    # study-level comparison is not estimable because the sole apo publication spans both
+    # exposure states.
     ("Drug-conditioned vs genuine-apo", "64/2 vs 0/3",
      f"counts only; the entry-level Fisher p = {fisher_p:.4f} assumes independence the "
      f"depositions do not have"),
-    ("Same comparison, clustered by study",
-     (f"p = {ctx['fisher_study_level']['p']:.2f}" if ctx else "p = 0.07"),
-     "all 3 genuine-apo entries come from one publication; with one apo study the smallest "
-     "attainable p is ~0.023"),
+    ("Between-study comparison", "not estimable",
+     study_assoc.get("reason", "only one publication contributes genuine-apo conformers "
+                     "and it also contributes drug-conditioned conformers")),
 ]
 with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
     f.write("**Table 1. Key quantitative results.** "

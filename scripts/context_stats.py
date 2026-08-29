@@ -38,6 +38,7 @@ CUTOFF_ANM = 15.0        # A; same contact cutoff as the ANM in reproduce_modes.
 K = 10                   # subspace dimension of the RMSIP
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import softmode_lib as _L                                              # noqa: E402
+from study_groups import load_study_groups                             # noqa: E402
 _FEAT = _L.functional_residues()          # data/crbn_features.json
 DRUG, ZINC = _FEAT["drug"], _FEAT["zinc"]
 TBD_START = 318          # thalidomide-binding domain
@@ -276,22 +277,33 @@ def main():
         rmsip_splits[nm] = {"n": int(len(idx)), "rmsip": _rmsip(idx)}
     rmsip_splits["median_resolution_A"] = med_res
 
-    # ---- (10) the ligand/state association at the level of studies, not entries -------
-    doi = {r["pdb"]: r["primary_citation_doi"]
-           for r in csv.DictReader(open("data/curation_study_groups.csv"))}
+    # ---- (10) why a study-level ligand/state Fisher table is not estimable -------------
     log = [r for r in csv.DictReader(open("data/crbn_curation_log.csv"))
            if r["global_state"] in ("drug-conditioned", "genuine-apo")]
+    groups = load_study_groups(labels)
     open_set = {str(l) for l in np.load("data/pca_diffvec.npz")["labels"][om]}
     by_study = {}
     for r in log:
-        key = (doi.get(r["pdb"], r["pdb"]), r["global_state"])
-        by_study[key] = by_study.get(key, False) or (r["pdb"] in open_set)
-    tab = [[0, 0], [0, 0]]
-    for (_, state), is_open in by_study.items():
-        tab[0 if state == "drug-conditioned" else 1][1 if is_open else 0] += 1
-    fisher_study = float(stats.fisher_exact(tab)[1])
-    apo_studies = sorted({doi.get(r["pdb"], r["pdb"]) for r in log
+        study = groups[r["pdb"]]
+        rec = by_study.setdefault(study, {"states": set(), "open": False})
+        rec["states"].add(r["global_state"])
+        rec["open"] = rec["open"] or (r["pdb"] in open_set)
+    apo_studies = sorted({groups[r["pdb"]] for r in log
                           if r["global_state"] == "genuine-apo"})
+    cross_arm_studies = sorted(study for study, rec in by_study.items()
+                               if len(rec["states"]) > 1)
+    fisher_study = {
+        "status": "not_estimable",
+        "p": None,
+        "reason": (
+            "Only one independent publication contributes genuine-apo structures, and "
+            "that publication also contributes drug-conditioned structures; duplicating "
+            "it across Fisher-table arms would violate independence."
+        ),
+        "n_studies_contributing_genuine_apo": len(apo_studies),
+        "genuine_apo_studies": apo_studies,
+        "studies_contributing_both_arms": cross_arm_studies,
+    }
 
     out = {
         "rmsip_random_subspace_null": {
@@ -339,11 +351,7 @@ def main():
         "open_only_node_set": node_set,
         "lever_arm_control": lever,
         "rmsip_by_method_and_resolution": rmsip_splits,
-        "fisher_study_level": {
-            "p": fisher_study, "table_drug_then_apo_closed_open": tab,
-            "n_studies_contributing_genuine_apo": len(apo_studies),
-            "genuine_apo_studies": apo_studies,
-        },
+        "fisher_study_level": fisher_study,
         "drug_vs_zinc": dict(functional, p_exact_floor_3v4=p_floor,
                              drug_residues=DRUG, zinc_residues=ZINC,
                              tbd_start=TBD_START, n_tbd=int(tbd.sum())),
@@ -392,9 +400,9 @@ def main():
           f"{lever['hinge_distance_A']['zinc_mean']:.1f} A")
     print("RMSIP by subset: " + ", ".join(
         f"{k} {v['rmsip']:.3f} (n={v['n']})" for k, v in rmsip_splits.items() if isinstance(v, dict)))
-    print(f"ligand/state association at study level: p = {fisher_study:.4f} "
-          f"(entry level 0.0002); all genuine-apo entries come from "
-          f"{len(apo_studies)} study/studies")
+    print("ligand/state association at study level: not estimable "
+          f"(entry-level tabulation p = 0.0002); genuine-apo comes from "
+          f"{len(apo_studies)} study and {len(cross_arm_studies)} study spans both states")
 
     if verify:
         assert abs(r["mean"] - 0.111) < 0.005, r["mean"]
@@ -427,7 +435,8 @@ def main():
         assert 0.45 < rmsip_splits["cryoem"]["rmsip"] < 0.70
         assert 0.55 < rmsip_splits["xray"]["rmsip"] < 0.75
         assert len(apo_studies) == 1, apo_studies
-        assert 0.03 < fisher_study < 0.15, fisher_study
+        assert cross_arm_studies, cross_arm_studies
+        assert fisher_study["status"] == "not_estimable" and fisher_study["p"] is None
         print("verify OK: RMSIP has a 0.111 floor, its p is exactly 2e-143 not 5e-5, the "
               "n-matched single-cluster null is 0.51 not 0.93, the 325 pairs are one "
               "direction, 269 residues are ~54 independent ones, and 3-vs-4 cannot beat 0.057")

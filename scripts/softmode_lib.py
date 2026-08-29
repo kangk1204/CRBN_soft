@@ -158,7 +158,7 @@ def rigid_body_basis(coords, domains, internal=True):
     always what is wanted. A superposed difference vector has no global component, so a
     null that keeps the global block spends probability mass on six directions the observed
     statistic cannot occupy, which inflates the apparent significance: for the CRBN
-    transition the two-block null moves from p = 0.030 to a substantially smaller value if
+    transition the matched two-block null moves from p = 0.027 to a substantially smaller value if
     the global block is left in. Pass internal=False only to reproduce that earlier
     behaviour deliberately.
     """

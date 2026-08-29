@@ -32,9 +32,7 @@ SENSOR_LOOP = (341, 361)              # contains His353
 
 
 def chain_of(pdb, ca):
-    if pdb in R.CHAIN_MAP and R.CHAIN_MAP[pdb] in ca:
-        return R.CHAIN_MAP[pdb]
-    return R.best_chain(ca, pdb)[0]
+    return R.select_chain(ca, pdb)[0]
 
 
 def main():

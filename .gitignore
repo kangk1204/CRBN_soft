@@ -5,11 +5,12 @@ __pycache__/
 .DS_Store
 /.env
 /.env.*
-/data/
+/data/*
+!/data/curation_study_groups.csv
+!/data/curation_study_overrides.csv
 /figures/
 /render/
 /study/
-/manuscript/
 /docs/
 *.docx
 *.dcd

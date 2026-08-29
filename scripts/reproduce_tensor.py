@@ -22,12 +22,15 @@ scripts/window_sensitivity.py, not here. A median Ca RMSD of 0.000 A is therefor
 that the coordinate extraction is faithful, not that the 98 -> 70 selection is correct.
 
 Curation rule (per PDB):
-  - one chain: among the auth chains carrying the CRBN entity (data/_rcsb_meta.json), the
-    one resolving the most of the 269-residue window, ties broken by lowest chain id.
-    Restricting to the CRBN entity matters: ranking ALL chains lets DDB1 win in entries
-    where it occupies chain A.
+  - identify CRBN chains by exact Q96SW2 accession in data/_rcsb_meta.json;
+  - choose the recorded primary-chain override when present, otherwise the lowest auth
+    chain id among those exact CRBN chains. This is the same membership rule used by
+    scripts/window_sensitivity.py. Best-covered copies are evaluated only as a sensitivity.
+    Restricting to the exact entity matters: ranking all chains lets DDB1 win in entries
+    where it occupies chain A, while description substring matching can select a partner
+    whose annotation merely mentions CRBN.
   - require the full 269-residue window to be resolved (Cα present); a PDB whose
-    best chain is missing any window residue is dropped from the analysis set.
+    selected primary chain is missing any window residue is dropped from the analysis set.
   - superpose: iterative Kabsch onto the running mean until convergence.
 
 Usage:  python scripts/reproduce_tensor.py [--verify] [--limit N]
@@ -40,6 +43,10 @@ try:
     from pdb_id import validate_pdb_id
 except ModuleNotFoundError:  # imported by path from the repository root
     from scripts.pdb_id import validate_pdb_id
+try:
+    from curation_contracts import chains_for_exact_accession, choose_primary_chain
+except ModuleNotFoundError:  # imported by path from the repository root
+    from scripts.curation_contracts import chains_for_exact_accession, choose_primary_chain
 
 # 269-residue analysis window: committed plain-text input written by
 # reproduce_ensemble.py --write-window. Reading it here keeps this script independent
@@ -51,23 +58,19 @@ CACHE = "data/_cif_cache"
 CACHE_WRITES_ENABLED = True
 UNSAFE_ALLOW_AMBIGUOUS_CHAIN = "--unsafe-allow-ambiguous-chain" in sys.argv
 
-# Explicit CRBN chain overrides. These are the 14 depositions where the
-# content-based rule below (chain resolving the most window residues, ties broken
-# by lowest chain id) would pick a partner chain instead of CRBN -- e.g. 8CVP,
-# where DDB1 (chain A) also resolves all 269 window positions. This is NOT the
-# list of entries whose CRBN chain is not chain A: CRBN is at chain B or C in
-# most of the 70 depositions, but the content-based rule already gets those
-# right. Loaded from the sidecar if present.
+# Recorded primary-chain overrides used by the curation workflow. Entity metadata is still
+# required and each override is checked against it; the sidecar cannot authorize a partner
+# chain. Entries without an override use the lowest auth chain id among exact-Q96SW2 chains.
 try:
     CHAIN_MAP = json.load(open("data/curation_chain_map.json"))
-except Exception:
+except FileNotFoundError:
     CHAIN_MAP = {}
 
 # Committed RCSB entity metadata: which auth chains carry the CRBN entity. This is what
 # makes chain selection safe without the sidecar; see crbn_chains().
 try:
     RCSB_META = json.load(open("data/_rcsb_meta.json", encoding="utf-8"))
-except Exception:
+except FileNotFoundError:
     RCSB_META = {}
 
 def fetch_cif(pdb):
@@ -153,18 +156,11 @@ def crbn_chains(pdb):
     e = RCSB_META.get(pdb.upper())
     if not e:
         return None
-    out = []
-    for pe in e.get("polymer_entities") or []:
-        blob = json.dumps(pe).lower()
-        if "cereblon" in blob or "q96sw2" in blob:
-            ids = (pe.get("rcsb_polymer_entity_container_identifiers") or {}).get(
-                "auth_asym_ids") or []
-            out += list(ids)
-    return sorted(out) or None
+    return chains_for_exact_accession(e, "Q96SW2") or None
 
 
 def best_chain(ca, pdb=None):
-    """CRBN chain resolving the most window residues (tie: lowest id)."""
+    """Best-covered exact-Q96SW2 chain, used only for explicit sensitivity work."""
     candidates = crbn_chains(pdb) if pdb else None
     if candidates is None:
         if UNSAFE_ALLOW_AMBIGUOUS_CHAIN:
@@ -198,28 +194,30 @@ def best_chain(ca, pdb=None):
 
 
 def select_chain(ca, pdb):
-    """Apply a recorded primary-chain override without bypassing entity metadata."""
-    if pdb not in CHAIN_MAP:
-        return best_chain(ca, pdb)
-
-    chosen = CHAIN_MAP[pdb]
+    """Select the curated primary CRBN copy and enforce exact entity provenance."""
     candidates = crbn_chains(pdb)
     problems = []
     if candidates is None:
         problems.append("missing CRBN chain metadata")
-    elif chosen not in candidates:
-        problems.append(f"recorded chain {chosen} is not among metadata CRBN chains {candidates}")
-    if chosen not in ca:
+
+    try:
+        chosen = choose_primary_chain(candidates or [], pdb, CHAIN_MAP)
+    except ValueError as exc:
+        chosen = CHAIN_MAP.get(pdb)
+        problems.append(str(exc))
+    if chosen is not None and chosen not in ca:
         problems.append(f"recorded chain {chosen} is absent from parsed coordinates")
 
     if problems:
         detail = "; ".join(problems)
         if not UNSAFE_ALLOW_AMBIGUOUS_CHAIN:
             raise RuntimeError(f"{pdb}: {detail}; refusing to bypass chain provenance")
-        print(f"WARNING: {pdb}: {detail}; using the historical all-chain fallback because "
+        print(f"WARNING: {pdb}: {detail}; using the best-coverage fallback because "
               "--unsafe-allow-ambiguous-chain was passed", file=sys.stderr)
         return best_chain(ca, pdb)
 
+    if chosen is None:
+        raise RuntimeError(f"{pdb}: no CRBN chain could be selected")
     n = sum(r in ca[chosen] for r in WINSET)
     return chosen, n
 
