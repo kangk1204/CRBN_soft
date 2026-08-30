@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,64 @@ def test_public_repo_contains_no_private_or_draft_paths_or_symlinks():
             continue
         if path.is_symlink() or forbidden_release_path(relative):
             offenders.append(relative.as_posix())
+    assert offenders == []
+
+
+def test_tracked_release_surface_is_text_only_and_code_scoped():
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout.decode("utf-8").split("\0")
+    tracked = [Path(name) for name in tracked if name]
+    allowed_roots = {".github", "data", "scripts", "tests"}
+    allowed_root_files = {
+        ".gitignore",
+        "CITATION.cff",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "environment.yml",
+        "pytest.ini",
+        "ruff.toml",
+    }
+    allowed_data = {
+        Path("data/curation_study_groups.csv"),
+        Path("data/curation_study_overrides.csv"),
+    }
+    binary_suffixes = {
+        ".doc",
+        ".docx",
+        ".jpeg",
+        ".jpg",
+        ".pdf",
+        ".png",
+        ".pptx",
+        ".rtf",
+        ".svg",
+        ".xls",
+        ".xlsx",
+        ".zip",
+    }
+    offenders = []
+    for relative in tracked:
+        if len(relative.parts) == 1:
+            if relative.as_posix() not in allowed_root_files:
+                offenders.append(f"unexpected root file: {relative}")
+        elif relative.parts[0] not in allowed_roots:
+            offenders.append(f"unexpected tracked area: {relative}")
+        if relative.parts[0] == "data" and relative not in allowed_data:
+            offenders.append(f"unexpected tracked data file: {relative}")
+        if relative.suffix.lower() in binary_suffixes:
+            offenders.append(f"binary-like suffix: {relative}")
+        raw = (ROOT / relative).read_bytes()
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            offenders.append(f"non-UTF-8 tracked file: {relative}")
+        if b"\0" in raw:
+            offenders.append(f"NUL byte in tracked file: {relative}")
     assert offenders == []
 
 

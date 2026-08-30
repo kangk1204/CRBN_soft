@@ -83,6 +83,21 @@ ls data/crbn_ensemble.ens.npz
 If this command prints the file name, the path is correct. Large input and
 generated data remain untracked under `data/`.
 
+For the primary PCA/ANM verifier only, the matching inputs can instead be read
+directly from an external location without copying them into this checkout:
+
+```bash
+python scripts/reproduce_modes.py --verify --data-source /absolute/path/to/data
+python scripts/reproduce_modes.py --verify --data-source /absolute/path/to/bundle.zip
+```
+
+The directory form must contain `crbn_ensemble.ens.npz`,
+`crbn_residue_window.csv`, and `crbn_anm_modes.npz` directly. The ZIP form must
+contain each of those files once under `data/`. ZIP contents are read in memory
+and are never extracted. Verification modifies neither the checkout nor the
+selected source. The other workflows below still require the local `data/` and,
+where noted, `render/` layout.
+
 The small `data/curation_study_groups.csv` and
 `data/curation_study_overrides.csv` files are the exceptions: both are tracked.
 The first freezes the RCSB primary-citation DOI snapshot used by this release;
@@ -182,8 +197,12 @@ pymol -cq scripts/render_fig2_3d.py
 
 ## Troubleshooting
 
-- `No such file or directory: data/...` means the input bundle is missing or
-  nested at the wrong level.
+- `missing required input(s)` lists every file that is absent or nested at the
+  wrong level in the selected directory or ZIP.
+- `data source is not a readable ZIP` means that the selected non-directory
+  path is corrupt or is not a ZIP file.
+- `duplicate required ZIP member` means that the archive is ambiguous and must
+  be rebuilt with one exact `data/...` member per required file.
 - `ModuleNotFoundError` usually means that `crbn-soft` is not active. Run
   `conda activate crbn-soft` and try again.
 - A network error during a coordinate rebuild usually means that RCSB is

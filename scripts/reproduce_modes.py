@@ -8,8 +8,8 @@ The 269-residue window is read from data/crbn_residue_window.csv.
 
 Inputs
   data/crbn_ensemble.ens.npz     70 x 269 x 3 curated Cα (superposed)
-Outputs (regenerated; --verify cross-checks them against the committed
-snapshot read out of git HEAD)
+Outputs (regenerated; --verify cross-checks them against the matching saved
+reference)
   crbn_pca.npz                   pc1..3, variance ratios, PC1 scores, diff vector
   crbn_pc_projections.csv        per-structure PC1/PC2 with open/closed label
   crbn_residue_fluctuations.csv  per-residue ANM & PCA square fluctuation
@@ -17,24 +17,305 @@ snapshot read out of git HEAD)
 Headline numbers reproduced: PC1 coordinate-variance fraction 88.3%, PC1-axis directional
 overlap 0.9996, ANM(open) mode-1 directional overlap 0.744, and ANM-PCA RMSIP 0.641.
 
-Usage:  python scripts/reproduce_modes.py [--verify]
+Verification can read either the local ``data/`` directory or an external
+data directory/ZIP without copying or extracting it.
+
+Usage:  python scripts/reproduce_modes.py [--verify] [--data-source PATH]
 """
-import sys, csv, io, os, subprocess
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import os
+import subprocess
+import zipfile
+from collections.abc import Sequence
+from pathlib import Path
+
 import numpy as np
 
 CUTOFF_ANM = 15.0   # Å
 CUTOFF_GNM = 10.0   # Å  (GNM contact cutoff; Fig 3a cross-correlation map)
 N_MODES = 20
 
-def load_verify_npz(path):
-    """Load the immutable reference for --verify from git, or from an on-disk artifact."""
-    blob = subprocess.run(["git", "show", f"HEAD:{path}"], capture_output=True, check=False)
-    if blob.returncode == 0 and blob.stdout:
-        return np.load(io.BytesIO(blob.stdout)), "committed snapshot (git HEAD)"
-    if os.path.exists(path):
-        return np.load(path), f"on-disk reference artifact ({path})"
-    sys.exit(f"verify aborted: no committed reference available for {path}; run inside a "
-             "git checkout or provide the on-disk reference artifact")
+ENSEMBLE_NAME = "crbn_ensemble.ens.npz"
+WINDOW_NAME = "crbn_residue_window.csv"
+MODE_NAME = "crbn_anm_modes.npz"
+VERIFY_INPUTS = (ENSEMBLE_NAME, WINDOW_NAME, MODE_NAME)
+REFERENCE_KEYS = (
+    "anm_diff_overlap",
+    "cum_overlap",
+    "anm_eigvals",
+    "anm_eigvecs",
+    "rmsip",
+    "resnums",
+    "overlap_anm_pca",
+)
+
+
+class AnalysisDataSource:
+    """Read exact analysis inputs from a directory or a ZIP without extraction."""
+
+    def __init__(self, path: Path, archive: bool) -> None:
+        self.path = path
+        self.archive = archive
+
+    @classmethod
+    def open(cls, raw_path: str | os.PathLike[str]) -> "AnalysisDataSource":
+        path = Path(raw_path)
+        if path.is_dir():
+            return cls(path, archive=False)
+        if not path.exists():
+            raise ValueError(f"data source does not exist: {path}")
+        if not path.is_file():
+            raise ValueError(f"data source is neither a directory nor a regular ZIP: {path}")
+        try:
+            with zipfile.ZipFile(path, "r") as archive:
+                archive.infolist()
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ValueError(f"data source is not a readable ZIP: {path}") from exc
+        return cls(path, archive=True)
+
+    @property
+    def description(self) -> str:
+        kind = "ZIP data source" if self.archive else "data directory"
+        return f"{kind} ({self.path})"
+
+    @staticmethod
+    def _member(name: str) -> str:
+        return f"data/{name}"
+
+    def _zip_info(self, archive: zipfile.ZipFile, name: str) -> zipfile.ZipInfo:
+        member = self._member(name)
+        matches = [info for info in archive.infolist() if info.filename == member]
+        if len(matches) > 1:
+            raise ValueError(f"{self.path}: duplicate required ZIP member {member}")
+        if not matches or matches[0].is_dir():
+            raise FileNotFoundError(member)
+        if matches[0].flag_bits & 0x1:
+            raise ValueError(f"{self.path}: encrypted ZIP member is not supported: {member}")
+        return matches[0]
+
+    def preflight(self, names: Sequence[str]) -> None:
+        missing: list[str] = []
+        if not self.archive:
+            missing = [name for name in names if not (self.path / name).is_file()]
+        else:
+            with zipfile.ZipFile(self.path, "r") as archive:
+                for name in names:
+                    try:
+                        self._zip_info(archive, name)
+                    except FileNotFoundError:
+                        missing.append(self._member(name))
+        if missing:
+            raise ValueError(
+                f"{self.description}: missing required input(s): {', '.join(missing)}"
+            )
+
+    def read_bytes(self, name: str) -> bytes:
+        if not self.archive:
+            path = self.path / name
+            try:
+                return path.read_bytes()
+            except FileNotFoundError as exc:
+                raise ValueError(f"{self.description}: missing required input: {name}") from exc
+        with zipfile.ZipFile(self.path, "r") as archive:
+            try:
+                info = self._zip_info(archive, name)
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    f"{self.description}: missing required input: {self._member(name)}"
+                ) from exc
+            try:
+                return archive.read(info)
+            except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                raise ValueError(
+                    f"{self.description}: could not read ZIP member {info.filename}"
+                ) from exc
+
+    def read_text(self, name: str) -> str:
+        try:
+            return self.read_bytes(name).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{self.description}: {name} is not valid UTF-8") from exc
+
+    def load_npz(self, name: str) -> np.lib.npyio.NpzFile:
+        try:
+            if self.archive:
+                return np.load(io.BytesIO(self.read_bytes(name)), allow_pickle=False)
+            return np.load(self.path / name, allow_pickle=False)
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            raise ValueError(f"{self.description}: {name} is not a readable NPZ") from exc
+
+
+def require(condition: object, message: object) -> None:
+    """Keep verification checks active under ``python -O``."""
+
+    if not bool(condition):
+        raise AssertionError(message)
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Recompute the primary PCA/ANM measurements and optionally verify them."
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="cross-check results without writing analysis outputs",
+    )
+    parser.add_argument(
+        "--data-source",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "external directory containing the required files directly, or a ZIP containing "
+            "them under data/ (verification only)"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.data_source is not None and not args.verify:
+        parser.error("--data-source requires --verify; external sources are read-only")
+    return args
+
+def _copy_reference(npz: np.lib.npyio.NpzFile, description: str) -> dict[str, np.ndarray]:
+    missing = [key for key in REFERENCE_KEYS if key not in npz.files]
+    if missing:
+        raise ValueError(f"{description}: mode reference lacks required key(s): {', '.join(missing)}")
+    return {key: np.asarray(npz[key]).copy() for key in REFERENCE_KEYS}
+
+
+def load_source_reference(source: AnalysisDataSource) -> tuple[dict[str, np.ndarray], str]:
+    with source.load_npz(MODE_NAME) as npz:
+        return _copy_reference(npz, source.description), source.description
+
+
+def load_verify_reference(
+    source: AnalysisDataSource, *, use_git_head: bool
+) -> tuple[dict[str, np.ndarray], str]:
+    """Load the immutable default reference from git or the authoritative source."""
+
+    if use_git_head:
+        path = f"data/{MODE_NAME}"
+        blob = subprocess.run(
+            ["git", "show", f"HEAD:{path}"],
+            capture_output=True,
+            check=False,
+        )
+        if blob.returncode == 0 and blob.stdout:
+            try:
+                with np.load(io.BytesIO(blob.stdout), allow_pickle=False) as npz:
+                    return _copy_reference(npz, "committed snapshot (git HEAD)"), (
+                        "committed snapshot (git HEAD)"
+                    )
+            except (OSError, ValueError, zipfile.BadZipFile) as exc:
+                raise ValueError(f"committed snapshot is not a readable NPZ: {path}") from exc
+    return load_source_reference(source)
+
+
+def load_analysis_inputs(
+    source: AnalysisDataSource,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Load and validate the coordinate tensor, residue window, and labels."""
+
+    with source.load_npz(ENSEMBLE_NAME) as ensemble:
+        missing = [key for key in ("_confs", "_labels") if key not in ensemble.files]
+        if missing:
+            raise ValueError(
+                f"{source.description}: {ENSEMBLE_NAME} lacks key(s): {', '.join(missing)}"
+            )
+        try:
+            confs = np.asarray(ensemble["_confs"], dtype=float).copy()
+            raw_labels = np.asarray(ensemble["_labels"]).copy()
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{source.description}: {ENSEMBLE_NAME} has invalid coordinate or label arrays"
+            ) from exc
+
+    if confs.ndim != 3 or confs.shape[0] < 2 or confs.shape[2] != 3:
+        raise ValueError(
+            f"{source.description}: _confs must have shape (n>=2, residues, 3), got {confs.shape}"
+        )
+    if not np.isfinite(confs).all():
+        raise ValueError(f"{source.description}: _confs contains non-finite coordinates")
+    if raw_labels.ndim != 1 or len(raw_labels) != confs.shape[0]:
+        raise ValueError(
+            f"{source.description}: _labels must be one-dimensional with {confs.shape[0]} entries"
+        )
+    full_labels = [str(label).strip() for label in raw_labels]
+    if any(not label for label in full_labels) or len(set(full_labels)) != len(full_labels):
+        raise ValueError(f"{source.description}: _labels must be non-empty and unique")
+    labels = [label.split("_")[0].split()[0][:4] for label in full_labels]
+
+    try:
+        reader = csv.DictReader(io.StringIO(source.read_text(WINDOW_NAME)))
+        if reader.fieldnames is None or "author_resnum" not in reader.fieldnames:
+            raise ValueError(f"{WINDOW_NAME}: missing author_resnum column")
+        values: list[int] = []
+        for line_number, row in enumerate(reader, start=2):
+            raw = row.get("author_resnum")
+            if raw is None or not raw.strip():
+                raise ValueError(f"{WINDOW_NAME}:{line_number}: missing author_resnum")
+            try:
+                values.append(int(raw))
+            except ValueError as exc:
+                raise ValueError(
+                    f"{WINDOW_NAME}:{line_number}: invalid author_resnum {raw!r}"
+                ) from exc
+    except csv.Error as exc:
+        raise ValueError(f"{source.description}: {WINDOW_NAME} is malformed CSV") from exc
+
+    if len(values) != confs.shape[1]:
+        raise ValueError(
+            f"{source.description}: residue window has {len(values)} rows but _confs has "
+            f"{confs.shape[1]} residues"
+        )
+    if len(values) != 269:
+        raise ValueError(f"{source.description}: expected 269 ordered residues, found {len(values)}")
+    if len(set(values)) != len(values) or any(
+        right <= left for left, right in zip(values, values[1:])
+    ):
+        raise ValueError(
+            f"{source.description}: author_resnum values must be unique and strictly increasing"
+        )
+    return confs, np.asarray(values, dtype=int), labels
+
+
+def validate_reference(
+    reference: dict[str, np.ndarray], resnums: np.ndarray, description: str
+) -> dict[str, np.ndarray]:
+    """Validate the complete scientific contract of a saved mode reference."""
+
+    expected_shapes = {
+        "anm_diff_overlap": (N_MODES,),
+        "cum_overlap": (N_MODES,),
+        "anm_eigvals": (N_MODES,),
+        "anm_eigvecs": (3 * len(resnums), N_MODES),
+        "rmsip": (),
+        "resnums": (len(resnums),),
+        "overlap_anm_pca": (10, 10),
+    }
+    checked: dict[str, np.ndarray] = {}
+    for key, shape in expected_shapes.items():
+        try:
+            value = np.asarray(reference[key], dtype=float)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{description}: invalid numeric reference key {key}") from exc
+        if value.shape != shape:
+            raise ValueError(f"{description}: {key} shape {value.shape}, expected {shape}")
+        if not np.isfinite(value).all():
+            raise ValueError(f"{description}: {key} contains non-finite values")
+        checked[key] = value
+    if not np.array_equal(checked["resnums"], np.asarray(resnums, dtype=float)):
+        raise ValueError(f"{description}: resnums do not exactly match the analysis window")
+    if np.any(checked["anm_eigvals"] <= 0):
+        raise ValueError(f"{description}: anm_eigvals must be strictly positive")
+    gram = checked["anm_eigvecs"].T @ checked["anm_eigvecs"]
+    if not np.allclose(gram, np.eye(N_MODES), rtol=0.0, atol=1e-8):
+        raise ValueError(f"{description}: anm_eigvecs are not an orthonormal basis")
+    return checked
 
 def pca(confs):
     n, m, _ = confs.shape
@@ -74,18 +355,11 @@ def modes_from(H, k):
     nz = w > 1e-9
     return w[nz][:k], v[:, nz][:, :k]
 
-def main():
-    verify = "--verify" in sys.argv
-    ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
-    confs = ens["_confs"]
-    # Residue numbering comes from the committed plain-text window
-    # (data/crbn_residue_window.csv, written by reproduce_ensemble.py --write-window),
-    # not from the mode artifact this script writes (which would be self-seeding) and
-    # not from the pickled ProDy AtomGroup inside the npz (which would require ProDy).
-    resnums = np.array([int(r["author_resnum"]) for r in
-                        csv.DictReader(open("data/crbn_residue_window.csv"))])
-    assert len(resnums) == confs.shape[1], (len(resnums), confs.shape)
-    labels = [str(l).split("_")[0].split()[0][:4] for l in ens["_labels"]]
+def run_analysis(args: argparse.Namespace) -> int:
+    verify = bool(args.verify)
+    source = AnalysisDataSource.open(args.data_source or Path("data"))
+    source.preflight(VERIFY_INPUTS if verify else (ENSEMBLE_NAME, WINDOW_NAME))
+    confs, resnums, labels = load_analysis_inputs(source)
 
     mean, pcv, pcw, vr, scores = pca(confs)
     pc1 = pcv[:, 0]
@@ -102,9 +376,13 @@ def main():
     ncut = int(np.argmax(gaps[:15])) + 1     # index of the widest gap among the leaders
     thresh = (srt[ncut-1] + srt[ncut]) / 2
     open_mask = s1 >= thresh
+    require(0 < int(open_mask.sum()) < len(open_mask), "PC1 split produced an empty state")
     scores[:, 0] = s1                         # store normalised PC1
     diff = confs[open_mask].mean(0) - confs[~open_mask].mean(0)
-    dvec = diff.reshape(-1); dvec /= np.linalg.norm(dvec)
+    dvec = diff.reshape(-1)
+    dnorm = float(np.linalg.norm(dvec))
+    require(np.isfinite(dnorm) and dnorm > 0.0, "open/closed difference vector is degenerate")
+    dvec /= dnorm
     ov_pc1_diff = abs(pc1 @ dvec)
 
     # ANM on the open 8CVP conformer only. Its coordinates are already stored in the
@@ -112,10 +390,14 @@ def main():
     # Superposition changes only rotation and translation, not the internal geometry
     # used to build the ANM Hessian.
     matches = [i for i, label in enumerate(labels) if label == "8CVP"]
-    assert len(matches) == 1, f"expected one 8CVP conformer, found {len(matches)}"
+    require(len(matches) == 1, f"expected one 8CVP conformer, found {len(matches)}")
     open_ca = confs[matches[0]]
     Ha = anm_hessian(open_ca, CUTOFF_ANM)
     aw, av = modes_from(Ha, N_MODES)
+    require(
+        aw.shape == (N_MODES,) and av.shape == (3 * len(resnums), N_MODES),
+        f"ANM produced incomplete modes: eigvals {aw.shape}, eigvecs {av.shape}",
+    )
     anm_diff_overlap = np.array([abs(av[:, m] @ dvec) for m in range(N_MODES)])
     # secondary axis using only the three apo open structures (8CVP/8D7X/8D7Y) as the
     # open end-state; reported in the text as a sensitivity check (0.77) alongside the
@@ -124,7 +406,10 @@ def main():
     apo_mask = np.array([lab in apo_labels for lab in labels])
     if apo_mask.sum() == 3:
         diff_apo = confs[apo_mask].mean(0) - confs[~open_mask].mean(0)
-        dvec_apo = diff_apo.reshape(-1); dvec_apo /= np.linalg.norm(dvec_apo)
+        dvec_apo = diff_apo.reshape(-1)
+        apo_norm = float(np.linalg.norm(dvec_apo))
+        require(np.isfinite(apo_norm) and apo_norm > 0.0, "three-apo axis is degenerate")
+        dvec_apo /= apo_norm
         anm_apo_overlap = abs(av[:, 0] @ dvec_apo)
     else:
         anm_apo_overlap = float("nan")
@@ -145,6 +430,10 @@ def main():
     gw_all, gv_all = np.linalg.eigh(Kg)
     keep_g = gw_all > 1e-8
     gw, gv = gw_all[keep_g][:20], gv_all[:, keep_g][:, :20]
+    require(
+        gw.shape == (N_MODES,) and gv.shape == (len(resnums), N_MODES),
+        f"GNM produced incomplete modes: eigvals {gw.shape}, eigvecs {gv.shape}",
+    )
     if not verify:
         np.savez("data/crbn_anm_modes.npz",
                  anm_eigvals=aw[:20], anm_eigvecs=av[:, :20],
@@ -184,55 +473,77 @@ def main():
         print("wrote data/crbn_pca.npz, pca_diffvec.npz, crbn_pc_projections.csv, "
               "crbn_residue_fluctuations.csv")
     else:
-        print("verify mode: tracked mode/PCA output files left untouched")
+        print("verify mode: analysis output files left untouched")
 
     if verify:
-        # Cross-check against the COMMITTED snapshot read out of git, not against the
-        # file this run just wrote (that would be a self-comparison that cannot fail).
+        # Cross-check against the matching saved reference, not against a file written
+        # during this run (that would be a self-comparison that cannot fail).
         # Tolerances allow small numerical differences between this numpy
         # implementation and the committed arrays (CA extraction order, eigensolver
         # conventions, and the ProDy origin of the first committed version); the
         # science reproduces to <0.03 on every metric.
-        c, src = load_verify_npz("data/crbn_anm_modes.npz")
-        assert abs(vr[0]*100 - 88.3) < 0.5, vr[0]*100
-        assert ov_pc1_diff > 0.98, ov_pc1_diff
-        assert abs(anm_diff_overlap[0] - 0.744) < 0.01, anm_diff_overlap[0]
+        current_raw, current_src = load_source_reference(source)
+        current = validate_reference(current_raw, resnums, current_src)
+        reference_raw, src = load_verify_reference(
+            source,
+            use_git_head=args.data_source is None,
+        )
+        reference = validate_reference(reference_raw, resnums, src)
+        require(abs(vr[0] * 100 - 88.3) < 0.5, vr[0] * 100)
+        require(ov_pc1_diff > 0.98, ov_pc1_diff)
+        require(abs(anm_diff_overlap[0] - 0.744) < 0.01, anm_diff_overlap[0])
         # Verify the complete matrix in the current artifact. In verify mode this script does
         # not write outputs, so this is an independent recomputation rather than a self-check.
-        with np.load("data/crbn_anm_modes.npz") as current:
-            saved_ov = np.asarray(current["overlap_anm_pca"], float)
-        assert saved_ov.shape == (10, 10), saved_ov.shape
+        saved_ov = current["overlap_anm_pca"]
         matrix_dmax = float(np.max(np.abs(saved_ov - ov)))
-        assert matrix_dmax < 2e-3, matrix_dmax
+        require(matrix_dmax < 2e-3, matrix_dmax)
 
         # Compare the primary ANM arrays against the immutable reference, not just the
         # RMSIP scalar. Eigenvectors are sign-arbitrary and are checked by absolute cosine.
         drift = []
-        if "anm_diff_overlap" in getattr(c, "files", []):
-            for key, got in (("anm_diff_overlap", anm_diff_overlap),
-                             ("cum_overlap", np.sqrt(np.cumsum(anm_diff_overlap**2))),
-                             ("anm_eigvals", aw[:20]), ("resnums", resnums)):
-                want = np.asarray(c[key], float)
-                if want.shape != np.asarray(got, float).shape:
-                    drift.append(f"{key}: shape {np.asarray(got).shape} vs {want.shape}")
-                else:
-                    dmax = float(np.max(np.abs(np.asarray(got, float) - want)))
-                    if dmax > 2e-3:
-                        drift.append(f"{key}: max |diff| {dmax:.2e}")
-            # eigenvectors are sign-arbitrary, so compare them up to a per-column sign
-            ev = np.asarray(c["anm_eigvecs"], float)
-            if ev.shape == av[:, :20].shape:
-                cos = np.abs((av[:, :20] * ev).sum(0))
-                if float(cos.min()) < 0.999:
-                    drift.append(f"anm_eigvecs: worst |cos| {float(cos.min()):.4f}")
-        assert abs(rmsip - float(c["rmsip"])) < 0.02, (rmsip, float(c["rmsip"]))
-        assert not drift, f"recomputed arrays disagree with {src}:\n  " + "\n  ".join(drift)
+        for key, got in (
+            ("anm_diff_overlap", anm_diff_overlap),
+            ("cum_overlap", np.sqrt(np.cumsum(anm_diff_overlap**2))),
+            ("anm_eigvals", aw[:20]),
+            ("resnums", resnums),
+        ):
+            want = reference[key]
+            got_array = np.asarray(got, float)
+            if want.shape != got_array.shape:
+                drift.append(f"{key}: shape {got_array.shape} vs {want.shape}")
+            else:
+                dmax = float(np.max(np.abs(got_array - want)))
+                if dmax > 2e-3:
+                    drift.append(f"{key}: max |diff| {dmax:.2e}")
+        # Eigenvectors are sign-arbitrary, so compare them up to a per-column sign.
+        ev = reference["anm_eigvecs"]
+        if ev.shape != av[:, :20].shape:
+            drift.append(f"anm_eigvecs: shape {av[:, :20].shape} vs {ev.shape}")
+        else:
+            cos = np.abs((av[:, :20] * ev).sum(0))
+            if float(cos.min()) < 0.999:
+                drift.append(f"anm_eigvecs: worst |cos| {float(cos.min()):.4f}")
+        require(
+            abs(rmsip - float(reference["rmsip"])) < 0.02,
+            (rmsip, float(reference["rmsip"])),
+        )
+        require(not drift, f"recomputed arrays disagree with {src}:\n  " + "\n  ".join(drift))
         print(f"cross-checked primary ANM arrays against {src}; complete 10x10 overlap matrix verified")
-        assert int(open_mask.sum()) == 5, int(open_mask.sum())
-        assert abs(anm_apo_overlap - 0.77) < 0.02, anm_apo_overlap
+        require(int(open_mask.sum()) == 5, int(open_mask.sum()))
+        require(abs(anm_apo_overlap - 0.77) < 0.02, anm_apo_overlap)
         print(f"verify OK: PC1 {vr[0]*100:.1f}%, PC1-diff overlap {ov_pc1_diff:.3f}, "
               f"ANM mode-1 {anm_diff_overlap[0]:.3f}, RMSIP {rmsip:.3f}, 5 open "
               f"(88.3% / 0.9996 / 0.744 / 0.641)")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        return run_analysis(args)
+    except (AssertionError, KeyError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        mode = "verify" if args.verify else "analysis"
+        raise SystemExit(f"{mode} aborted: {exc}") from None
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
