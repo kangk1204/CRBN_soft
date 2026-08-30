@@ -102,9 +102,11 @@ where noted, `render/` layout.
 The small `data/curation_study_groups.csv` and
 `data/curation_study_overrides.csv` files are the exceptions: both are tracked.
 The first freezes the RCSB primary-citation DOI snapshot used by this release;
-the second records the manual grouping of missing-DOI deposition series.
-Grouped analyses fail rather than treating a new missing DOI as an independent
-study. The current 70-entry curation resolves to 38 study groups.
+the second records publisher-verified DOI assignments for entries whose RCSB
+records lack a primary DOI. It also provides an explicit series identifier when
+no external DOI can be verified. Grouped analyses fail rather than treating an
+unresolved entry as an independent study. The current 70-entry curation resolves
+to 38 study groups.
 
 ## Run the main analysis
 

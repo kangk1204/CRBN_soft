@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import importlib.util
 from collections import Counter
 from pathlib import Path
@@ -484,13 +485,24 @@ def test_study_group_resolution_is_fail_closed_for_missing_dois(tmp_path):
 
 
 def test_frozen_study_group_snapshot_resolves_to_38_curated_groups():
-    groups = load_script("study_groups").load_study_groups()
+    module = load_script("study_groups")
+    groups = module.load_study_groups()
     counts = Counter(groups.values())
     assert len(groups) == 70
     assert len(counts) == 38
     assert groups["9H59"] == "10.1101/2024.11.06.622079"
-    assert counts["no_doi_series:9sq4_9sq6"] == 3
-    assert counts["no_doi_series:9uum_9v0f"] == 4
+    assert counts["10.1038/nsmb.2874"] == 1
+    assert counts["10.1038/s41467-024-44698-1"] == 1
+    assert counts["10.1038/s41587-026-03237-7"] == 3
+    assert counts["10.1101/2025.06.08.658527"] == 4
+
+    with module.GROUP_TABLE.open(encoding="utf-8", newline="") as handle:
+        snapshot = {
+            row["pdb"]: row["primary_citation_doi"]
+            for row in csv.DictReader(handle)
+        }
+    for pdb in ["4TZ4", "8G66", "9SQ4", "9SQ5", "9SQ6", "9UUM", "9V0A", "9V0B", "9V0F"]:
+        assert snapshot[pdb].startswith("no_doi:")
 
 
 def test_boundary_nulls_distinguish_bond_length_from_equal_displacement():

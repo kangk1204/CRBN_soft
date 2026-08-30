@@ -2,10 +2,12 @@
 """Fail-closed publication grouping for the curated CRBN ensemble.
 
 RCSB primary-citation DOIs are the default group identifiers. A missing DOI is
-not treated as evidence that a deposition is an independent study: every such
+not treated as evidence that a deposition is an independent study. Every such
 entry must be covered by the committed manual map in
-``data/curation_study_overrides.csv``. This prevents a newly missing or stale
-citation from silently increasing the effective sample size.
+``data/curation_study_overrides.csv``. The map can record a DOI verified from the
+associated report or an explicit series identifier when no DOI can be verified.
+This prevents incomplete citation metadata from silently increasing the
+effective sample size.
 """
 
 from __future__ import annotations
@@ -92,7 +94,7 @@ def resolve_study_groups(
     labels: list[str],
     overrides_path: Path = OVERRIDE_TABLE,
 ) -> dict[str, str]:
-    """Resolve an in-memory PDB-to-DOI mapping using the committed overrides."""
+    """Resolve an in-memory PDB-to-study mapping using committed overrides."""
     overrides = load_overrides(overrides_path)
     normalized_labels = [str(x).upper() for x in labels]
     duplicates = sorted(

@@ -5,8 +5,9 @@ Deposited PDB entries are not independent samples: one study often contributes
 several structures. The main analysis weights entries equally. This script asks
 whether that weighting drives the reported ANM alignment, by
 
-  1. grouping the 70 curated conformers by RCSB primary-citation DOI, with a
-     tracked manual series map for entries that have no DOI,
+  1. grouping the 70 curated conformers by RCSB primary-citation DOI, with
+     tracked publisher-verified DOI overrides or explicit series identifiers
+     for entries whose RCSB records have no DOI,
   2. recomputing the open->closed axis with every STUDY weighted equally
      (each group contributes the mean of its members), and
   3. dropping each whole study in turn (leave-one-study-out).

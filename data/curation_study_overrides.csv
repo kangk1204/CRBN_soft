@@ -1,10 +1,10 @@
 pdb,study_group,reason
-4TZ4,no_doi_series:4tz4,RCSB has no primary DOI; retained as a singleton study
-8G66,no_doi_series:8g66,RCSB has no primary DOI; retained as a singleton study
-9SQ4,no_doi_series:9sq4_9sq6,Shared title series and consecutive depositions 9SQ4-9SQ6
-9SQ5,no_doi_series:9sq4_9sq6,Shared title series and consecutive depositions 9SQ4-9SQ6
-9SQ6,no_doi_series:9sq4_9sq6,Shared title series and consecutive depositions 9SQ4-9SQ6
-9UUM,no_doi_series:9uum_9v0f,Shared CRL4-CRBN ubiquitylation-assembly deposition series
-9V0A,no_doi_series:9uum_9v0f,Shared CRL4-CRBN ubiquitylation-assembly deposition series
-9V0B,no_doi_series:9uum_9v0f,Shared CRL4-CRBN ubiquitylation-assembly deposition series
-9V0F,no_doi_series:9uum_9v0f,Shared CRL4-CRBN ubiquitylation-assembly deposition series
+4TZ4,10.1038/nsmb.2874,Primary report linked to PDB 4TZ4 by PubMed
+8G66,10.1038/s41467-024-44698-1,Final report lists PDB 8G66 in its data availability statement
+9SQ4,10.1038/s41587-026-03237-7,Final report lists PDB 9SQ4 to 9SQ6 in its data availability statement
+9SQ5,10.1038/s41587-026-03237-7,Final report lists PDB 9SQ4 to 9SQ6 in its data availability statement
+9SQ6,10.1038/s41587-026-03237-7,Final report lists PDB 9SQ4 to 9SQ6 in its data availability statement
+9UUM,10.1101/2025.06.08.658527,bioRxiv preprint lists PDB 9UUM and 9V0A to 9V0F in its data availability statement
+9V0A,10.1101/2025.06.08.658527,bioRxiv preprint lists PDB 9UUM and 9V0A to 9V0F in its data availability statement
+9V0B,10.1101/2025.06.08.658527,bioRxiv preprint lists PDB 9UUM and 9V0A to 9V0F in its data availability statement
+9V0F,10.1101/2025.06.08.658527,bioRxiv preprint lists PDB 9UUM and 9V0A to 9V0F in its data availability statement
