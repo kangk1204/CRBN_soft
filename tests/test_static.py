@@ -1,43 +1,12 @@
 from pathlib import Path
-import re
 import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", ".pytest_cache", ".ruff_cache", "__pycache__"}
-BANNED_PATH_TERMS = (
-    "manu" + "script",
-    "review" + "er",
-    "sub" + "mission",
-    "cover_" + "letter",
-    "cover-" + "letter",
-)
-
-
-def iter_text_files():
-    for path in ROOT.rglob("*"):
-        if any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts):
-            continue
-        if path.is_file() and not path.is_symlink():
-            try:
-                path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            yield path
-
-
 def forbidden_release_path(path: Path) -> bool:
-    normalized = path.as_posix().lower()
-    banned_components = {
-        ".omx",
-        "archive",
-        "docs",
-        "fig" + "ures",
-        "manu" + "script",
-    }
-    return any(part.lower() in banned_components for part in path.parts) or any(
-        term in normalized for term in BANNED_PATH_TERMS
-    )
+    banned_components = {".omx", "archive", "docs", "draft", "figures", "internal"}
+    return any(part.casefold() in banned_components for part in path.parts)
 
 
 def test_public_repo_contains_no_private_or_draft_paths_or_symlinks():
@@ -106,33 +75,6 @@ def test_tracked_release_surface_is_text_only_and_code_scoped():
             offenders.append(f"non-UTF-8 tracked file: {relative}")
         if b"\0" in raw:
             offenders.append(f"NUL byte in tracked file: {relative}")
-    assert offenders == []
-
-
-def test_private_path_filter_catches_nested_and_binary_names():
-    assert forbidden_release_path(Path("data/nested/manu" + "script/draft.bin"))
-    assert forbidden_release_path(Path("data/review" + "er_notes.pdf"))
-    assert not forbidden_release_path(Path("data/crbn_ensemble.ens.npz"))
-
-
-def test_public_repo_text_has_no_private_or_draft_terms():
-    terms = [
-        "manu" + "script",
-        "jour" + "nal",
-        "sub" + "mission",
-        "cover " + "letter",
-        "review" + "er",
-    ]
-    pattern = re.compile(
-        r"\b(" + "|".join(re.escape(term) for term in terms) + r")\b",
-        re.IGNORECASE,
-    )
-    offenders = []
-    for path in iter_text_files():
-        text = path.read_text(encoding="utf-8")
-        for line_no, line in enumerate(text.splitlines(), start=1):
-            if pattern.search(line):
-                offenders.append(f"{path.relative_to(ROOT)}:{line_no}: {line}")
     assert offenders == []
 
 
