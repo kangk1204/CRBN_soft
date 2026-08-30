@@ -184,6 +184,118 @@ B Q96SW2 222 442
     assert "CRBN_UniProt_mapping:1-221;222-442" in flags
 
 
+@pytest.mark.parametrize(
+    ("pdb_id", "sample_length", "deleted_residues", "expected_ranges"),
+    [
+        ("9DWW", 839, range(396, 700), "396-699"),
+        (
+            "9SAF",
+            836,
+            [
+                *range(396, 461),
+                *range(463, 686),
+                *range(687, 696),
+                *range(698, 702),
+                *range(703, 706),
+            ],
+            "396-460;463-685;687-695;698-701;703-705",
+        ),
+    ],
+)
+def test_construct_contract_retains_q16531_deletion_rows(
+    pdb_id, sample_length, deleted_residues, expected_ranges
+):
+    contracts = load_script("curation_contracts")
+    entry = {
+        "polymer_entities": [
+            {
+                "entity_poly": {"rcsb_sample_sequence_length": 442},
+                "rcsb_polymer_entity": {"pdbx_mutation": None},
+                "rcsb_polymer_entity_container_identifiers": {
+                    "auth_asym_ids": ["B"],
+                    "reference_sequence_identifiers": [
+                        {"database_accession": "Q96SW2"}
+                    ],
+                },
+            },
+            {
+                "entity_poly": {"rcsb_sample_sequence_length": sample_length},
+                "rcsb_polymer_entity": {"pdbx_mutation": None},
+                "rcsb_polymer_entity_container_identifiers": {
+                    "auth_asym_ids": ["A"],
+                    "reference_sequence_identifiers": [
+                        {"database_accession": "Q16531"}
+                    ],
+                },
+            },
+        ]
+    }
+    difference_rows = "\n".join(
+        f"2 Q16531 {residue} deletion" for residue in deleted_residues
+    )
+    cif = f"""data_{pdb_id}
+loop_
+_struct_ref_seq.pdbx_strand_id
+_struct_ref_seq.pdbx_db_accession
+_struct_ref_seq.db_align_beg
+_struct_ref_seq.db_align_end
+B Q96SW2 1 442
+A Q16531 1 1140
+#
+loop_
+_struct_ref_seq_dif.align_id
+_struct_ref_seq_dif.pdbx_seq_db_accession_code
+_struct_ref_seq_dif.pdbx_seq_db_seq_num
+_struct_ref_seq_dif.details
+{difference_rows}
+#
+"""
+    flags = contracts.exact_construct_flags(entry, cif)
+    assert flags == f"DDB1_struct_ref_seq_dif_deletion:{expected_ranges}"
+
+
+def test_construct_contract_retains_8u15_q16531_mapping_unavailable_flag():
+    contracts = load_script("curation_contracts")
+    entry = {
+        "polymer_entities": [
+            {
+                "entity_poly": {"rcsb_sample_sequence_length": 373},
+                "rcsb_polymer_entity": {"pdbx_mutation": None},
+                "rcsb_polymer_entity_container_identifiers": {
+                    "auth_asym_ids": ["A"],
+                    "reference_sequence_identifiers": [
+                        {"database_accession": "Q96SW2"}
+                    ],
+                },
+            },
+            {
+                "entity_poly": {"rcsb_sample_sequence_length": 836},
+                "rcsb_polymer_entity": {"pdbx_mutation": None},
+                "rcsb_polymer_entity_container_identifiers": {
+                    "auth_asym_ids": ["B"],
+                    "reference_sequence_identifiers": [
+                        {"database_accession": "Q16531"}
+                    ],
+                },
+            },
+        ]
+    }
+    cif = """data_8U15
+loop_
+_struct_ref_seq.pdbx_strand_id
+_struct_ref_seq.pdbx_db_accession
+_struct_ref_seq.db_align_beg
+_struct_ref_seq.db_align_end
+A Q96SW2 70 442
+B 8U15 1 1140
+#
+"""
+    flags = contracts.exact_construct_flags(entry, cif)
+    assert flags == (
+        "CRBN_UniProt_mapping:70-442;DDB1_exact_Q16531_mapping_unavailable"
+    )
+
+
 def test_main_builders_execute_directory_setup_before_bundle_validation(tmp_path):
     builders = [
         "build_fig1.py",

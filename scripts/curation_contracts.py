@@ -160,6 +160,73 @@ def accession_range_groups(
     return sorted(tuple(sorted(intervals)) for intervals in grouped.values())
 
 
+def accession_deletion_range_groups(
+    cif_text: str,
+    accession: str,
+) -> list[tuple[tuple[int, int], ...]]:
+    """Return exact database-residue deletions grouped by sequence alignment.
+
+    ``struct_ref_seq`` records alignment end points, not every aligned residue.
+    An internal deletion can therefore sit inside an apparently canonical
+    ``1-N`` interval.  The corresponding ``struct_ref_seq_dif`` rows are the
+    authoritative per-residue record and must be retained when classifying a
+    construct.
+    """
+    category = "struct_ref_seq_dif"
+    try:
+        rows = cif_loop_rows(cif_text, category)
+    except ValueError as exc:
+        if str(exc) == f"mmCIF has no {category} loop":
+            return []
+        raise
+
+    target = accession.upper()
+    canonical_length = CANONICAL_LENGTHS.get(target)
+    grouped: dict[str, set[int]] = {}
+    for row_index, row in enumerate(rows):
+        if row.get("pdbx_seq_db_accession_code", "").upper() != target:
+            continue
+        if row.get("details", "").strip().lower() != "deletion":
+            continue
+        try:
+            residue = int(row["pdbx_seq_db_seq_num"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid {target} deletion residue on {category} row {row_index + 1}"
+            ) from exc
+        if residue < 1 or (canonical_length is not None and residue > canonical_length):
+            ceiling = (
+                f"{canonical_length}"
+                if canonical_length is not None
+                else "the accession length"
+            )
+            raise ValueError(
+                f"invalid {target} deletion residue {residue}; expected "
+                f"1 <= residue <= {ceiling}"
+            )
+        align_id = row.get("align_id", "").strip()
+        if align_id in {"", ".", "?"}:
+            align_id = f"unassociated_row_{row_index}"
+        grouped.setdefault(align_id, set()).add(residue)
+
+    range_groups: set[tuple[tuple[int, int], ...]] = set()
+    for residues in grouped.values():
+        ordered = sorted(residues)
+        if not ordered:
+            continue
+        ranges: list[tuple[int, int]] = []
+        start = previous = ordered[0]
+        for residue in ordered[1:]:
+            if residue == previous + 1:
+                previous = residue
+                continue
+            ranges.append((start, previous))
+            start = previous = residue
+        ranges.append((start, previous))
+        range_groups.add(tuple(ranges))
+    return sorted(range_groups)
+
+
 def _covered_positions(ranges: Sequence[tuple[int, int]]) -> set[int]:
     return {residue for start, end in ranges for residue in range(start, end + 1)}
 
@@ -217,6 +284,7 @@ def exact_construct_flags(entry: Mapping, cif_text: str) -> str:
     ddb1_coverage = _maximum_mapping_coverage(ddb1_groups)
     ddb1_lengths, ddb1_mutations = _entity_summary(entry, DDB1_ACCESSION)
     ddb1_full = _mapping_is_canonical(ddb1_groups, DDB1_CANONICAL_LENGTH)
+    ddb1_deletion_groups = accession_deletion_range_groups(cif_text, DDB1_ACCESSION)
 
     flags: list[str] = []
     if not crbn_full:
@@ -227,6 +295,11 @@ def exact_construct_flags(entry: Mapping, cif_text: str) -> str:
         flags.append("CRBN_extra_sequence_or_tag")
     if ddb1_ranges and not ddb1_full:
         flags.append(f"DDB1_UniProt_mapping:{_range_text(ddb1_ranges)}")
+    if ddb1_present and not ddb1_ranges:
+        flags.append("DDB1_exact_Q16531_mapping_unavailable")
+    if ddb1_deletion_groups:
+        deletion_text = " | ".join(_range_text(group) for group in ddb1_deletion_groups)
+        flags.append(f"DDB1_struct_ref_seq_dif_deletion:{deletion_text}")
     if ddb1_mutations:
         flags.append("DDB1_mutation:" + " | ".join(ddb1_mutations))
     if ddb1_ranges and any(length > ddb1_coverage for length in ddb1_lengths):
