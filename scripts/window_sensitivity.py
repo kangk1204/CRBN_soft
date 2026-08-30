@@ -54,7 +54,7 @@ Inputs
   data/crbn_residue_window.csv    the 269-residue analysis window (author numbering)
   data/curation_chain_map.json    per-PDB CRBN chain for the 14 non-lowest-id cases
   data/crbn_structure_inventory.csv  the 98 post-fragment-filter depositions
-  data/crbn_ensemble.ens.npz      published tensor, used only as a cross-check
+  data/crbn_ensemble.ens.npz      reference tensor, used only as a cross-check
   data/_cif_cache/<pdb>.cif.gz    raw mmCIF (downloaded on demand from RCSB)
   data/_rcsb_meta.json            RCSB metadata cache (fetched on demand)
 
@@ -65,7 +65,16 @@ Outputs
 Usage
   python scripts/window_sensitivity.py [--verify] [--limit N]
 """
-import os, sys, json, csv, gzip, urllib.request
+import csv
+import gzip
+import io
+import json
+import os
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
 import numpy as np
 
 try:
@@ -88,6 +97,10 @@ except ModuleNotFoundError:  # imported by path from the repository root
         exact_construct_flags,
         reference_accessions,
     )
+try:
+    from analysis_contracts import assert_tree_close, atomic_write_json, atomic_write_text
+except ModuleNotFoundError:
+    from scripts.analysis_contracts import assert_tree_close, atomic_write_json, atomic_write_text
 
 CUTOFF_ANM = 15.0        # A, the primary ANM contact cutoff
 N_MODES = 20             # non-trivial ANM modes retained
@@ -97,32 +110,83 @@ TERMINAL_SLACK = 5       # window positions from either end counted as "terminal
 SEED = 42
 
 DOMAINS = {"NTD": (77, 186), "HB": (187, 317), "TBD": (318, 426)}
-CACHE = "data/_cif_cache"
-META = "data/_rcsb_meta.json"
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "data"
+CACHE = DATA / "_cif_cache"
+META = DATA / "_rcsb_meta.json"
 RCSB_GRAPHQL = "https://data.rcsb.org/graphql"
 CACHE_WRITES_ENABLED = True
+HELP_TEXT = (
+    "Usage: python scripts/window_sensitivity.py [--verify] [--limit N]\n"
+    "  --verify   recompute the complete analysis and compare both reference artifacts\n"
+    "  --limit N  run a diagnostic subset without writing canonical artifacts"
+)
 
-WIN = np.array([int(r["author_resnum"]) for r in
-                csv.DictReader(open("data/crbn_residue_window.csv"))]).astype(int)
-WINSET = [int(r) for r in WIN]
-CHAIN_MAP = json.load(open("data/curation_chain_map.json"))
+WIN = np.array([], dtype=int)
+WINSET = []
+CHAIN_MAP = {}
+NTD_R, HB_R, TBD_R = [], [], []
 
 # ---------------------------------------------------------------- mmCIF input
 
+
+def atomic_write_bytes(path, payload):
+    """Atomically replace a binary cache entry without changing its file mode."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        mode = path.stat().st_mode & 0o777
+    else:
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+        mode = 0o666 & ~current_umask
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def decode_cif_blob(blob, pdb):
+    """Validate a gzipped mmCIF payload before it enters the local cache."""
+    try:
+        text = gzip.decompress(blob).decode("utf-8")
+    except (OSError, EOFError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{pdb}: invalid gzipped mmCIF payload") from exc
+    stripped = text.lstrip()
+    first_line = stripped.splitlines()[0].strip().lower() if stripped else ""
+    if first_line != f"data_{pdb.lower()}" or "_atom_site." not in text:
+        raise ValueError(f"{pdb}: downloaded payload is not a complete coordinate mmCIF")
+    return text
+
+
 def fetch_cif(pdb):
     pdb = validate_pdb_id(pdb)
-    p = f"{CACHE}/{pdb}.cif.gz"
-    if os.path.exists(p) and os.path.getsize(p) >= 1000:
-        with gzip.open(p, "rt") as fh:
-            return fh.read()
+    path = Path(CACHE) / f"{pdb}.cif.gz"
+    if path.exists():
+        try:
+            cached_blob = path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"{pdb}: cached mmCIF is unreadable: {path}") from exc
+        try:
+            return decode_cif_blob(cached_blob, pdb)
+        except ValueError:
+            # A fresh payload is validated before atomically replacing the bad cache.
+            pass
     with urllib.request.urlopen(
             f"https://files.rcsb.org/download/{pdb}.cif.gz", timeout=120) as fh:
         blob = fh.read()
-    text = gzip.decompress(blob).decode("utf-8")
+    text = decode_cif_blob(blob, pdb)
     if CACHE_WRITES_ENABLED:
-        os.makedirs(CACHE, exist_ok=True)
-        with open(p, "wb") as fh:
-            fh.write(blob)
+        atomic_write_bytes(path, blob)
     return text
 
 
@@ -215,20 +279,23 @@ _META_QUERY = """query($ids:[String!]!){entries(entry_ids:$ids){
 
 
 def rcsb_meta(pdbs, write_cache=True):
-    cached = json.load(open(META)) if os.path.exists(META) else {}
+    meta_path = Path(META)
+    cached = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    if not isinstance(cached, dict):
+        raise ValueError(f"{meta_path}: metadata cache must be a JSON object")
     todo = [p for p in pdbs if p not in cached]
     for k in range(0, len(todo), 20):
         body = json.dumps({"query": _META_QUERY,
                            "variables": {"ids": todo[k:k + 20]}}).encode()
         req = urllib.request.Request(RCSB_GRAPHQL, data=body,
                                      headers={"Content-Type": "application/json"})
-        d = json.loads(urllib.request.urlopen(req, timeout=90).read())
+        with urllib.request.urlopen(req, timeout=90) as response:
+            d = json.loads(response.read())
         for e in (d.get("data", {}).get("entries") or []):
             if e:
                 cached[e["rcsb_id"]] = e
     if todo and write_cache:
-        with open(META, "w", encoding="utf-8") as _fh:
-            json.dump(cached, _fh)
+        atomic_write_json(meta_path, cached, sort_keys=True)
     return cached
 
 
@@ -293,7 +360,39 @@ def domain_residues(dom):
     return [r for r in WINSET if lo <= r <= hi]
 
 
-NTD_R, HB_R, TBD_R = (domain_residues(d) for d in ("NTD", "HB", "TBD"))
+def load_bundle_configuration(data_dir=None):
+    """Load and validate bundle configuration after the command starts."""
+    global WIN, WINSET, CHAIN_MAP, NTD_R, HB_R, TBD_R
+    base = DATA if data_dir is None else Path(data_dir)
+    window_path = base / "crbn_residue_window.csv"
+    with window_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None or "author_resnum" not in reader.fieldnames:
+            raise ValueError(f"{window_path}: missing author_resnum column")
+        try:
+            residues = [int(row["author_resnum"]) for row in reader]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{window_path}: author_resnum values must be integers") from exc
+    if len(residues) != 269:
+        raise ValueError(f"{window_path}: expected exactly 269 residue labels, found {len(residues)}")
+    if any(right <= left for left, right in zip(residues, residues[1:])):
+        raise ValueError(f"{window_path}: residue labels must be strictly increasing")
+
+    chain_path = base / "curation_chain_map.json"
+    chain_map = json.loads(chain_path.read_text(encoding="utf-8"))
+    if not isinstance(chain_map, dict):
+        raise ValueError(f"{chain_path}: chain map must be a JSON object")
+    normalized = {}
+    for raw_pdb, chain in chain_map.items():
+        pdb = validate_pdb_id(raw_pdb)
+        if pdb != raw_pdb or not isinstance(chain, str) or not chain.strip():
+            raise ValueError(f"{chain_path}: invalid primary-chain mapping {raw_pdb!r}: {chain!r}")
+        normalized[pdb] = chain
+
+    WIN = np.asarray(residues, dtype=int)
+    WINSET = residues
+    CHAIN_MAP = normalized
+    NTD_R, HB_R, TBD_R = (domain_residues(name) for name in ("NTD", "HB", "TBD"))
 
 
 def centroid_distance(ca, ntd=None, tbd=None):
@@ -474,23 +573,217 @@ def analyse(confs, labels, resnums, ref_label=None, sup_sel=None, tag=""):
         "superposition_target": "whole" if sup_sel is None else tag,
     }
 
+
+def parse_run_options(arguments):
+    """Parse the small command surface and identify diagnostic partial runs."""
+    verify = False
+    limit = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--verify":
+            if verify:
+                raise ValueError("--verify may be supplied only once")
+            verify = True
+            index += 1
+            continue
+        if argument == "--limit":
+            if limit is not None:
+                raise ValueError("--limit may be supplied only once")
+            if index + 1 >= len(arguments):
+                raise ValueError("--limit requires a positive integer")
+            try:
+                limit = int(arguments[index + 1])
+            except ValueError as exc:
+                raise ValueError("--limit requires a positive integer") from exc
+            if limit <= 0:
+                raise ValueError("--limit must be positive")
+            index += 2
+            continue
+        raise ValueError(f"unknown argument: {argument}")
+    if verify and limit is not None:
+        raise ValueError("--verify requires the complete inventory and rejects --limit")
+    return verify, limit
+
+
+def validate_inventory(rows):
+    """Validate inventory schema and return complete and curated PDB sets."""
+    required = {"pdb_id", "passes_fragment_filter", "in_curated_ensemble"}
+    if not rows:
+        raise ValueError("structure inventory is empty")
+    identifiers = []
+    passing = []
+    curated = []
+    for row_number, row in enumerate(rows, start=2):
+        if not required.issubset(row):
+            raise ValueError(
+                f"structure inventory row {row_number} missing {sorted(required - set(row))}"
+            )
+        pdb = validate_pdb_id(row["pdb_id"])
+        if pdb != row["pdb_id"]:
+            raise ValueError(f"structure inventory row {row_number} is not canonical: {row['pdb_id']}")
+        for field in ("passes_fragment_filter", "in_curated_ensemble"):
+            if row[field] not in {"0", "1"}:
+                raise ValueError(f"structure inventory row {row_number} has invalid {field}")
+        identifiers.append(pdb)
+        if row["passes_fragment_filter"] == "1":
+            passing.append(pdb)
+        if row["in_curated_ensemble"] == "1":
+            curated.append(pdb)
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("structure inventory contains duplicate PDB identifiers")
+    if not passing:
+        raise ValueError("structure inventory contains no fragment-filtered entries")
+    if not set(curated).issubset(passing):
+        raise ValueError("curated entries must also pass the fragment filter")
+    return sorted(passing), sorted(curated)
+
+
+def validate_complete_generation(
+    requested,
+    extracted,
+    curated,
+    rediscovered,
+    excluded,
+    adjudication,
+    variants,
+    expected_variants,
+    out,
+):
+    """Require every requested input and every output branch before replacement."""
+    requested_set = set(requested)
+    if set(extracted) != requested_set:
+        raise RuntimeError(
+            "coordinate extraction is incomplete: "
+            f"missing={sorted(requested_set - set(extracted))}, "
+            f"extra={sorted(set(extracted) - requested_set)}"
+        )
+    if sorted(rediscovered) != sorted(curated):
+        raise RuntimeError("rediscovered curation rule does not match the reference label set")
+    expected_excluded = requested_set - set(rediscovered)
+    if set(excluded) != expected_excluded:
+        raise RuntimeError("excluded-entry set is inconsistent with the complete inventory")
+    adjudicated = [row.get("pdb") for row in adjudication]
+    if len(set(adjudicated)) != len(adjudicated) or set(adjudicated) != expected_excluded:
+        raise RuntimeError("adjudication does not cover every excluded entry exactly once")
+
+    expected_variant_set = set(expected_variants)
+    if set(variants) != expected_variant_set:
+        raise RuntimeError(
+            "ensemble-variant set is incomplete: "
+            f"missing={sorted(expected_variant_set - set(variants))}, "
+            f"extra={sorted(set(variants) - expected_variant_set)}"
+        )
+    skipped = sorted(name for name, result in variants.items() if result.get("skipped"))
+    if skipped:
+        raise RuntimeError(f"ensemble variants were skipped: {skipped}")
+
+    required_top = {
+        "protocol",
+        "curation_rule_rediscovered",
+        "adjudication_summary",
+        "adjudication",
+        "ensembles",
+        "superposition_dependence",
+        "method_subsets",
+        "constructs",
+        "ddb1_entity_census",
+        "empty_middle",
+    }
+    if set(out) != required_top:
+        raise RuntimeError(
+            f"output schema mismatch: missing={sorted(required_top - set(out))}, "
+            f"extra={sorted(set(out) - required_top)}"
+        )
+    if not out["curation_rule_rediscovered"]["matches_committed_labels"]:
+        raise RuntimeError("output records a failed reference-label reconstruction")
+    if out["adjudication"] != adjudication or out["ensembles"] != variants:
+        raise RuntimeError("output branches diverge from their fully computed results")
+    if set(out["empty_middle"]) != expected_variant_set:
+        raise RuntimeError("empty-middle diagnostics do not cover every ensemble variant")
+    if set(out["superposition_dependence"]) != {
+        "whole_molecule", "on_NTD", "on_HB", "on_TBD"
+    }:
+        raise RuntimeError("superposition sweep is incomplete")
+    if not {"X-ray", "cryo-EM", "contingency", "cos_xray_vs_cryoem_axis"}.issubset(
+        out["method_subsets"]
+    ):
+        raise RuntimeError("method-subset controls are incomplete")
+
+
+def prepare_artifact_payloads(out):
+    """Strictly serialize and round-trip the complete JSON and CSV artifacts."""
+    json_payload = json.dumps(out, indent=1, sort_keys=True, allow_nan=False) + "\n"
+    normalized = json.loads(json_payload)
+    adjudication = normalized.get("adjudication")
+    if not isinstance(adjudication, list) or not adjudication:
+        raise RuntimeError("adjudication unexpectedly empty; refusing to emit headerless output")
+    fields = list(adjudication[0])
+    if "pdb" not in fields or any(set(row) != set(fields) for row in adjudication):
+        raise RuntimeError("adjudication rows do not share one complete CSV schema")
+
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(csv_buffer, fieldnames=fields, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(adjudication)
+    csv_payload = csv_buffer.getvalue()
+    round_trip = list(csv.DictReader(io.StringIO(csv_payload, newline="")))
+    expected_round_trip = [
+        {field: "" if row[field] is None else str(row[field]) for field in fields}
+        for row in adjudication
+    ]
+    if round_trip != expected_round_trip:
+        raise RuntimeError("CSV round-trip changed, lost, or reordered adjudication values")
+    return normalized, json_payload, csv_payload
+
+
+def finalize_artifacts(out, json_path, csv_path, *, verify, partial):
+    """Verify or write complete artifacts; partial runs are always no-write."""
+    if verify and partial:
+        raise ValueError("verification cannot use partial results")
+    if partial:
+        return out
+    normalized, json_payload, csv_payload = prepare_artifact_payloads(out)
+    if verify:
+        reference = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        assert_tree_close(normalized, reference, float_tolerance=1e-9)
+        if Path(csv_path).read_text(encoding="utf-8") != csv_payload:
+            raise AssertionError(f"recomputed adjudication differs from {csv_path}")
+        return normalized
+
+    # Both payloads have passed schema, finiteness, and round-trip checks before
+    # either destination is replaced. Each replacement is itself atomic.
+    atomic_write_text(Path(csv_path), csv_payload)
+    atomic_write_text(Path(json_path), json_payload)
+    return normalized
+
 # ------------------------------------------------------------------ main
 
 def main():
     global CACHE_WRITES_ENABLED
-    verify = "--verify" in sys.argv
+    if any(argument in {"-h", "--help"} for argument in sys.argv[1:]):
+        if len(sys.argv[1:]) != 1:
+            raise ValueError("--help cannot be combined with analysis options")
+        print(HELP_TEXT)
+        return 0
+    verify, limit = parse_run_options(sys.argv[1:])
+    partial = limit is not None
     CACHE_WRITES_ENABLED = not verify
-    inv = list(csv.DictReader(open("data/crbn_structure_inventory.csv")))
-    pdbs = sorted({r["pdb_id"] for r in inv if r["passes_fragment_filter"] == "1"})
-    curated = sorted({r["pdb_id"] for r in inv if r["in_curated_ensemble"] == "1"})
-    if "--limit" in sys.argv:
-        n = int(sys.argv[sys.argv.index("--limit") + 1])
-        pdbs = sorted(set(pdbs[:n]) | set(curated))
+    load_bundle_configuration()
+    inventory_path = DATA / "crbn_structure_inventory.csv"
+    with inventory_path.open(encoding="utf-8", newline="") as handle:
+        inv = list(csv.DictReader(handle))
+    complete_pdbs, curated = validate_inventory(inv)
+    pdbs = complete_pdbs
+    if limit is not None:
+        pdbs = sorted(set(complete_pdbs[:limit]) | set(curated))
     meta = rcsb_meta(pdbs, write_cache=not verify)
 
     # ---- per-structure extraction, every CRBN chain of every deposition -----
     S = {}
     for k, p in enumerate(pdbs, 1):
+        if p not in meta:
+            raise RuntimeError(f"{p}: missing RCSB metadata after resolution")
         e = meta[p]
         chains = crbn_chains_of(e)
         cif_text = fetch_cif(p)
@@ -511,7 +804,9 @@ def main():
                 "partocc_ca": atoms[ch]["partocc_ca"],
             }
         if not per:
-            continue
+            raise RuntimeError(
+                f"{p}: no coordinates were parsed for exact-Q96SW2 chains {chains}"
+            )
         primary = choose_primary_chain(chains, p, CHAIN_MAP)
         if primary not in per:
             raise RuntimeError(
@@ -532,18 +827,18 @@ def main():
             print("  ...extracted %d/%d" % (k, len(pdbs)), flush=True)
     print("extracted %d depositions" % len(S))
 
-    # ---- the published rule, rediscovered rather than assumed ---------------
-    # A deposition enters the published ensemble iff its PRIMARY (lowest-id, or
+    # ---- the reference rule, rediscovered rather than assumed ---------------
+    # A deposition enters the reference ensemble iff its PRIMARY (lowest-id, or
     # chain-map) CRBN chain resolves the whole window AND its resolution is
-    # within RES_MAX. Both conditions are verified below against the committed
+    # within RES_MAX. Both conditions are verified below against the reference
     # label list; the resolution ceiling is implicit in the curated set and is
     # reported here because it, not coverage, is what excludes some entries.
-    def passes_paper(p):
+    def passes_reference(p):
         s = S[p]
         return (s["per"][s["primary"]]["cov"] == len(WINSET)
                 and s["resolution"] is not None and s["resolution"] <= RES_MAX)
 
-    rediscovered = sorted(p for p in S if passes_paper(p))
+    rediscovered = sorted(p for p in S if passes_reference(p))
     excluded = sorted(set(S) - set(rediscovered))
 
     # ---- (A) adjudicate every excluded deposition ---------------------------
@@ -607,7 +902,9 @@ def main():
         why = []
         if c["cov"] < len(WINSET):
             why.append("window coverage %d/%d on chain %s" % (c["cov"], len(WINSET), s["primary"]))
-        if s["resolution"] is None or s["resolution"] > RES_MAX:
+        if s["resolution"] is None:
+            why.append("resolution unavailable; cannot establish the curated-set ceiling")
+        elif s["resolution"] > RES_MAX:
             why.append("resolution %.2f A exceeds the %.1f A ceiling of the curated set"
                        % (s["resolution"], RES_MAX))
         spread = [v["dist"] for v in s["per"].values() if v["dist"] is not None]
@@ -640,13 +937,6 @@ def main():
             "doi": s["doi"], "title": s["title"][:90],
         })
 
-    if not verify:
-        with open("data/excluded_structures_adjudication.csv", "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(adjudication[0].keys()),
-                               lineterminator="\n")
-            w.writeheader()
-            for r in adjudication:
-                w.writerow(r)
     calls = {}
     for r in adjudication:
         calls[r["state_call"]] = calls.get(r["state_call"], 0) + 1
@@ -709,7 +999,7 @@ def main():
                  100 * r["pc1_variance_fraction"], r["anm_mode1_overlap"],
                  r["anm_best_rank"], r["rmsip_anm_pca"]))
 
-    # ---- (C) analyst-choice sweeps on the published ensemble ---------------
+    # ---- (C) analyst-choice sweeps on the reference ensemble ---------------
     confs0, labels0, common0 = build(rule="a", coverage=1.0)
     idx = {"NTD": [i for i, r in enumerate(common0) if r in NTD_R],
            "HB": [i for i, r in enumerate(common0) if r in HB_R],
@@ -866,17 +1156,35 @@ def main():
         "ddb1_entity_census": ddb1_census,
         "empty_middle": empty_middle,
     }
-    if verify:
-        print("verify mode: tracked window-sensitivity output files left untouched")
+    expected_variants = [name for name, _ in specs]
+    if not partial:
+        validate_complete_generation(
+            complete_pdbs,
+            S,
+            curated,
+            rediscovered,
+            excluded,
+            adjudication,
+            variants,
+            expected_variants,
+            out,
+        )
+    json_path = DATA / "window_sensitivity.json"
+    csv_path = DATA / "excluded_structures_adjudication.csv"
+    out = finalize_artifacts(
+        out, json_path, csv_path, verify=verify, partial=partial
+    )
+    if partial:
+        print("limit mode: diagnostic partial results; canonical JSON/CSV left untouched")
+    elif verify:
+        print("verify mode: complete JSON/CSV artifacts match; files left untouched")
     else:
-        with open("data/window_sensitivity.json", "w") as fh:
-            json.dump(out, fh, indent=1, sort_keys=True)
         print("wrote data/window_sensitivity.json and data/excluded_structures_adjudication.csv")
 
     if verify:
         pa = variants["a_paper_rule"]
         assert out["curation_rule_rediscovered"]["matches_committed_labels"], \
-            "rediscovered curation rule does not reproduce the committed 70 labels"
+            "rediscovered curation rule does not reproduce the reference 70 labels"
         assert pa["n_conformers"] == 70 and pa["n_residues"] == 269, \
             (pa["n_conformers"], pa["n_residues"])
         assert pa["n_open"] == 5, pa["n_open"]

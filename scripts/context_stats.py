@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Context statistics for the numbers quoted in the text but not produced by a figure script.
 
-Eight blocks, all recomputed from committed data:
+Eight blocks, all recomputed from a matching input bundle:
 
  1  random-subspace RMSIP null  -- the missing baseline for RMSIP = 0.641 (two random
     orthonormal 10-D subspaces of R^807 already share sqrt(k/d) = 0.111)
@@ -29,7 +29,8 @@ Inputs   data/crbn_anm_modes.npz, data/crbn_ensemble.ens.npz, data/pca_diffvec.n
 Outputs  data/context_stats.json
 Usage    python scripts/context_stats.py [--verify]
 """
-import json, os, sys, csv
+import argparse, json, os, sys, csv
+from pathlib import Path
 import numpy as np
 from scipy import stats
 
@@ -39,8 +40,11 @@ K = 10                   # subspace dimension of the RMSIP
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import softmode_lib as _L                                              # noqa: E402
 from study_groups import load_study_groups                             # noqa: E402
-_FEAT = _L.functional_residues()          # data/crbn_features.json
-DRUG, ZINC = _FEAT["drug"], _FEAT["zinc"]
+from analysis_contracts import (                                       # noqa: E402
+    assert_tree_close,
+    atomic_write_json,
+    validate_ensemble_diff,
+)
 TBD_START = 318          # thalidomide-binding domain
 
 
@@ -70,6 +74,25 @@ def pct_rank(x):
     return stats.rankdata(x) / len(x) * 100
 
 
+def circular_shift_pvalue(profile, group_mask):
+    """Two-sided exact circular-shift test, including the identity shift."""
+    values = np.asarray(profile, dtype=float)
+    mask = np.asarray(group_mask)
+    if values.ndim != 1 or values.size < 2 or not np.isfinite(values).all():
+        raise ValueError("profile must be a finite one-dimensional array with at least two values")
+    if mask.shape != values.shape or mask.dtype.kind != "b":
+        raise ValueError("group mask must be boolean and match the profile shape")
+    if not mask.any() or mask.all():
+        raise ValueError("group mask must select a nonempty proper subset")
+    observed = float(values[mask].mean() - values[~mask].mean())
+    shifted = np.array([
+        np.roll(values, shift)[mask].mean() - np.roll(values, shift)[~mask].mean()
+        for shift in range(values.size)
+    ])
+    pvalue = float((np.abs(shifted) >= abs(observed)).mean())
+    return observed, shifted, pvalue
+
+
 def anm_modes(coords, cutoff, k):
     """Slowest k non-trivial ANM modes; same construction as reproduce_modes.py."""
     n = len(coords)
@@ -89,18 +112,48 @@ def anm_modes(coords, cutoff, k):
     return ew[nz][:k], ev[:, nz][:, :k]
 
 
-def main():
-    verify = "--verify" in sys.argv
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify", action="store_true", help="recompute and compare without writing")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    verify = bool(args.verify)
+    features = _L.functional_residues()
+    drug_residues, zinc_residues = features["drug"], features["zinc"]
+    DRUG, ZINC = drug_residues, zinc_residues
     rng = np.random.default_rng(SEED)
     ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
-    confs = ens["_confs"]
+    dd = np.load("data/pca_diffvec.npz", allow_pickle=False)
+    confs, label_array, om, dvec = validate_ensemble_diff(ens, dd)
+    labels = label_array.tolist()
     X = confs.reshape(len(confs), -1)
-    dd = np.load("data/pca_diffvec.npz")
-    om = dd["open_mask"].astype(bool)
-    dvec = dd["diff_vec"]
     oi, ci = np.where(om)[0], np.where(~om)[0]
-    M = np.load("data/crbn_anm_modes.npz")
+    M = np.load("data/crbn_anm_modes.npz", allow_pickle=False)
+    required_modes = {"anm_eigvals", "anm_eigvecs", "rmsip", "resnums"}
+    if not required_modes.issubset(M.files):
+        raise ValueError(f"mode artifact missing keys {sorted(required_modes - set(M.files))}")
     V = M["anm_eigvecs"]
+    eigvals = np.asarray(M["anm_eigvals"], dtype=float)
+    rmsip_value = np.asarray(M["rmsip"], dtype=float)
+    window = np.array([int(r["author_resnum"]) for r in
+                       csv.DictReader(open("data/crbn_residue_window.csv"))])
+    if V.ndim != 2 or V.shape[0] != dvec.size or V.shape[1] < K or not np.isfinite(V).all():
+        raise ValueError(f"invalid ANM eigenvector matrix {V.shape}")
+    if eigvals.shape != (V.shape[1],) or eigvals.size < K or not np.isfinite(eigvals).all():
+        raise ValueError(f"invalid ANM eigenvalue array {eigvals.shape}")
+    if not (eigvals > 0).all():
+        raise ValueError("ANM eigenvalues must be positive")
+    if rmsip_value.shape != () or not np.isfinite(rmsip_value):
+        raise ValueError("RMSIP artifact must contain one finite scalar")
+    if not 0.0 <= float(rmsip_value) <= 1.0:
+        raise ValueError("RMSIP artifact must lie in [0, 1]")
+    if not np.allclose(V.T @ V, np.eye(V.shape[1]), atol=1e-8, rtol=0.0):
+        raise ValueError("ANM eigenvectors are not an orthonormal finite basis")
+    if M["resnums"].shape != window.shape or not np.array_equal(M["resnums"], window):
+        raise ValueError("ANM residue labels do not exactly match the analysis-window order")
     d = V.shape[0]
 
     # ---- (1) what RMSIP do two UNRELATED 10-D subspaces of R^807 already share? -------
@@ -112,7 +165,7 @@ def main():
     rs = np.array(rs)
 
     # ---- (2) where does RMSIP^2 come from, and what variance backs PC2-PC10? ----------
-    # the committed npz stores only 3 PCs, so the 10 PCs are recomputed here
+    # the input bundle's NPZ stores only 3 PCs, so the 10 PCs are recomputed here
     Xc = (confs - confs.mean(0)).reshape(len(confs), -1)
     w, v = np.linalg.eigh(np.cov(Xc.T))
     order = np.argsort(w)[::-1]
@@ -157,7 +210,17 @@ def main():
     res = np.array([int(r["resnum"]) for r in rows])
     anm = np.array([float(r["anm_sqfluct"]) for r in rows])
     pcaf = np.array([float(r["pca_sqfluct"]) for r in rows])
+    if len(set(res.tolist())) != len(res) or not np.isfinite(anm).all() or not np.isfinite(pcaf).all():
+        raise ValueError("residue fluctuation table must have unique labels and finite values")
+    if not np.array_equal(res, window):
+        raise ValueError(
+            "residue fluctuation labels do not exactly match the analysis-window order"
+        )
     ca = read_ca("render/open_8cvp.pdb", res)
+    if ca.shape != (len(res), 3) or not np.isfinite(ca).all():
+        raise ValueError(
+            f"open-reference coordinates do not exactly cover residue-table order: {ca.shape}"
+        )
     D = np.linalg.norm(ca[:, None, :] - ca[None, :, :], axis=-1)
     cn = (D <= CUTOFF_ANM).sum(1) - 1
     rho_cn, p_cn = stats.spearmanr(cn, anm)
@@ -171,12 +234,9 @@ def main():
     for i in np.where(np.diff(res) > 1)[0]:
         flank[i] = flank[i + 1] = True
     p_flank = float(stats.mannwhitneyu(anm[flank], anm[~flank], alternative="two-sided")[1])
-    obs_diff = float(anm[flank].mean() - anm[~flank].mean())
     # circular shift keeps the autocorrelation of the profile and destroys only the
     # alignment between the profile and the gap positions
-    shifted = np.array([np.roll(anm, s)[flank].mean() - np.roll(anm, s)[~flank].mean()
-                        for s in range(1, n)])
-    p_shift = float((np.abs(shifted) >= abs(obs_diff)).mean())
+    _, shifted, p_shift = circular_shift_pvalue(anm, flank)
 
     # ---- (8) exact 3-vs-4 tests, and the smallest p they could possibly reach --------
     idx = {r: i for i, r in enumerate(res)}
@@ -214,10 +274,12 @@ def main():
             seen.add(ri); res_all.append(ri)
             X_all.append([float(ln[30:38]), float(ln[38:46]), float(ln[46:54])])
     res_all, X_all = np.array(res_all), np.array(X_all)
-    window = np.array([int(r["author_resnum"]) for r in
-                       csv.DictReader(open("data/crbn_residue_window.csv"))])
     w_full, v_full = anm_modes(X_all, CUTOFF_ANM, 20)
     keep = np.where(np.isin(res_all, window))[0]
+    if not np.array_equal(res_all[keep], window):
+        raise ValueError(
+            "open-reference coordinates do not exactly match the analysis-window order"
+        )
     proj = v_full.reshape(len(res_all), 3, 20)[keep].reshape(-1, 20)
     proj /= np.linalg.norm(proj, axis=0, keepdims=True)
     ov_full = np.abs(proj.T @ dvec)
@@ -234,7 +296,7 @@ def main():
     # A Ca-level square fluctuation dominated by one hinge mode grows with distance from
     # that hinge, so a group further out is more mobile for geometric reasons alone. The
     # test is whether the contrast survives removing the distance trend.
-    X8 = confs[[str(l) for l in ens["_labels"]].index("8CVP")]   # open reference, 269 x 3
+    X8 = confs[labels.index("8CVP")]   # open reference, 269 x 3
     hinge_cen = X8[(window >= 258) & (window <= 315)].mean(0)
     dist = np.linalg.norm(X8 - hinge_cen, axis=1)
     lever = {}
@@ -266,7 +328,6 @@ def main():
         Y = X[idx] - X[idx].mean(0)
         P = np.linalg.svd(Y, full_matrices=False)[2][:K].T
         return float(np.sqrt((np.abs(V[:, :K].T @ P) ** 2).sum() / K))
-    labels = [str(l) for l in ens["_labels"]]
     med_res = float(np.median([float(log[l]["resolution"]) for l in labels]))
     rmsip_splits = {"all": _rmsip(np.arange(len(labels)))}
     for nm, keep in (("xray", lambda l: log[l]["method"] == "X-ray"),
@@ -281,29 +342,19 @@ def main():
     log = [r for r in csv.DictReader(open("data/crbn_curation_log.csv"))
            if r["global_state"] in ("drug-conditioned", "genuine-apo")]
     groups = load_study_groups(labels)
-    open_set = {str(l) for l in np.load("data/pca_diffvec.npz")["labels"][om]}
+    open_set = {labels[index] for index in np.where(om)[0]}
     by_study = {}
     for r in log:
-        study = groups[r["pdb"]]
-        rec = by_study.setdefault(study, {"states": set(), "open": False})
-        rec["states"].add(r["global_state"])
-        rec["open"] = rec["open"] or (r["pdb"] in open_set)
+        key = (groups[r["pdb"]], r["global_state"])
+        by_study[key] = by_study.get(key, False) or (r["pdb"] in open_set)
+    tab = [[0, 0], [0, 0]]
+    for (_, state), is_open in by_study.items():
+        tab[0 if state == "drug-conditioned" else 1][1 if is_open else 0] += 1
     apo_studies = sorted({groups[r["pdb"]] for r in log
                           if r["global_state"] == "genuine-apo"})
-    cross_arm_studies = sorted(study for study, rec in by_study.items()
-                               if len(rec["states"]) > 1)
-    fisher_study = {
-        "status": "not_estimable",
-        "p": None,
-        "reason": (
-            "Only one independent publication contributes genuine-apo structures, and "
-            "that publication also contributes drug-conditioned structures; duplicating "
-            "it across Fisher-table arms would violate independence."
-        ),
-        "n_studies_contributing_genuine_apo": len(apo_studies),
-        "genuine_apo_studies": apo_studies,
-        "studies_contributing_both_arms": cross_arm_studies,
-    }
+    drug_studies = sorted({groups[r["pdb"]] for r in log
+                           if r["global_state"] == "drug-conditioned"})
+    shared_arm_studies = sorted(set(apo_studies) & set(drug_studies))
 
     out = {
         "rmsip_random_subspace_null": {
@@ -351,16 +402,23 @@ def main():
         "open_only_node_set": node_set,
         "lever_arm_control": lever,
         "rmsip_by_method_and_resolution": rmsip_splits,
-        "fisher_study_level": fisher_study,
+        "fisher_study_level": {
+            "status": "not_estimable", "p": None,
+            "reason": ("Only one independent publication contributes genuine-apo "
+                       "structures, and it also contributes drug-conditioned structures; "
+                       "splitting it by arm would create pseudo-independent observations."),
+            "descriptive_table_drug_then_apo_closed_open": tab,
+            "n_studies_contributing_genuine_apo": len(apo_studies),
+            "genuine_apo_studies": apo_studies,
+            "studies_contributing_both_arms": shared_arm_studies,
+        },
         "drug_vs_zinc": dict(functional, p_exact_floor_3v4=p_floor,
                              drug_residues=DRUG, zinc_residues=ZINC,
                              tbd_start=TBD_START, n_tbd=int(tbd.sum())),
         "seed": SEED, "n_draws": NDRAW,
     }
     if not verify:
-        with open("data/context_stats.json", "w") as fh:
-            json.dump(out, fh, indent=1)
-            fh.write("\n")
+        atomic_write_json(Path("data/context_stats.json"), out)
 
     r, dcp, s5, pp = (out["rmsip_random_subspace_null"], out["rmsip_decomposition"],
                       out["openness_vs_mode_rank"], out["pair_vector_parallelism"])
@@ -401,10 +459,12 @@ def main():
     print("RMSIP by subset: " + ", ".join(
         f"{k} {v['rmsip']:.3f} (n={v['n']})" for k, v in rmsip_splits.items() if isinstance(v, dict)))
     print("ligand/state association at study level: not estimable "
-          f"(entry-level tabulation p = 0.0002); genuine-apo comes from "
-          f"{len(apo_studies)} study and {len(cross_arm_studies)} study spans both states")
+          f"(entry-level tabulation p=0.0002); {len(apo_studies)} apo publication, "
+          f"also represented in the drug-conditioned arm={shared_arm_studies}")
 
     if verify:
+        reference = json.loads(Path("data/context_stats.json").read_text(encoding="utf-8"))
+        assert_tree_close(out, reference)
         assert abs(r["mean"] - 0.111) < 0.005, r["mean"]
         assert abs(r["mean"] - r["analytic_sqrt_k_over_d"]) < 0.005, r["mean"]
         assert abs(dcp["pc1_column_fraction"] - 0.188) < 0.01, dcp["pc1_column_fraction"]
@@ -421,7 +481,8 @@ def main():
         assert (ra["contact_number_min"], ra["contact_number_min_resnum"]) == (12, 222)
         assert abs(ra["n_eff"] - 53.5) < 0.5, ra["n_eff"]
         assert 1e-16 < ra["p_neff_corrected"] < 1e-12, ra["p_neff_corrected"]
-        assert ra["n_flank"] == 20 and 0.02 < ra["p_circular_shift"] < 0.10
+        assert ra["n_flank"] == 20 and ra["n_shifts"] == 269
+        assert abs(ra["p_circular_shift"] - 15 / 269) < 1e-15
         assert abs(functional["anm"]["p_exact"] - 0.2286) < 1e-3
         assert abs(functional["pca"]["p_exact"] - p_floor) < 1e-9
         assert node_set["n_ca_open_reference"] == 349, node_set["n_ca_open_reference"]
@@ -435,9 +496,9 @@ def main():
         assert 0.45 < rmsip_splits["cryoem"]["rmsip"] < 0.70
         assert 0.55 < rmsip_splits["xray"]["rmsip"] < 0.75
         assert len(apo_studies) == 1, apo_studies
-        assert cross_arm_studies, cross_arm_studies
-        assert fisher_study["status"] == "not_estimable" and fisher_study["p"] is None
-        print("verify OK: RMSIP has a 0.111 floor, its p is exactly 2e-143 not 5e-5, the "
+        assert shared_arm_studies == apo_studies, (shared_arm_studies, apo_studies)
+        print("verify OK: exact input-bundle artifact matches; RMSIP has a 0.111 floor, its "
+              "p is exactly 2e-143 not 5e-5, the "
               "n-matched single-cluster null is 0.51 not 0.93, the 325 pairs are one "
               "direction, 269 residues are ~54 independent ones, and 3-vs-4 cannot beat 0.057")
     return 0

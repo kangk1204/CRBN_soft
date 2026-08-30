@@ -1,143 +1,299 @@
 #!/usr/bin/env python3
 """Bootstrap and leave-one-open-out robustness of the ensemble soft mode.
 
-Regenerates data/pca_robust.npz, the grouped-bootstrap source array. PC1
-"overlap" is measured against the
-STRUCTURAL open->closed difference vector (data/pca_diffvec.npz, the canonical
-five-open/65-closed axis), NOT against the ensemble's own PC1 -- the latter
-would be near-circular. The grouped bootstrap gives PC1 variance 86% [48,94]
-and open->closed overlap 0.98 [0.75,1.00] across 38 fail-closed publication groups
-(fixed seed 42, 2000 resamples). The entry-level bootstrap, 88% [73,93] and 0.99 [0.97,1.00], is
-computed alongside it and reported only as a within-study comparison.
-
-Inputs (committed, small):
-  data/crbn_ensemble.ens.npz   70 conformers x 269 Ca (_confs)
-  data/pca_diffvec.npz         open->closed diff_vec, per-conformer labels, open mask
-Output:
-  data/pca_robust.npz          vfs, ovs, vf0, ov0, open_labels, vf_closed
+The primary interval is a cluster bootstrap over 38 source-study groups (fixed
+seed 42, 2,000 resamples). ``--verify`` recomputes every stored array without
+writing.
 """
-import sys
+
+from __future__ import annotations
+
+import argparse
+import os
+import stat
+import tempfile
+from collections.abc import Callable, Sequence
+from pathlib import Path
 
 import numpy as np
-ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
-confs = ens["_confs"]                       # (70, 269, 3)
-n = confs.shape[0]
-dv = np.load("data/pca_diffvec.npz")
-diff = dv["diff_vec"]                        # unit vector, open->closed (3*269,)
-labels = dv["labels"]
-open_idx = np.where(dv["open_mask"])[0]      # the 5 open structures
 
-def pca_pc1(X, diff):
-    """Return (PC1 variance fraction, |PC1 . open-closed axis|) for a coord stack.
-
-    With m samples in d dimensions and m << d (here 70 vs 807), the covariance
-    eigenproblem is solved through the m x m Gram matrix instead of the d x d
-    covariance: the two share their non-zero spectrum, and the leading covariance
-    eigenvector is recovered as Xc^T u / ||Xc^T u||. Identical to within numerical
-    noise, and fast enough to bootstrap.
-    """
-    Xf = X.reshape(X.shape[0], -1); Xc = Xf - Xf.mean(0)
-    m = Xc.shape[0]
-    gram = Xc @ Xc.T / (m - 1)                      # m x m, same non-zero eigenvalues
-    w, u = np.linalg.eigh(gram)
-    o = np.argsort(w)[::-1]
-    total = w[w > 0].sum()
-    pc1 = Xc.T @ u[:, o[0]]
-    nrm = np.linalg.norm(pc1)
-    if nrm < 1e-12:
-        return 0.0, 0.0
-    return w[o][0] / total, abs((pc1 / nrm) @ diff)
-
-vf0, ov0 = pca_pc1(confs, diff)
-print(f"Full ensemble: PC1 var {vf0*100:.1f}%  overlap {ov0:.3f}")
-
-# --- bootstrap -------------------------------------------------------------------------
-# Entries are not independent: many come from one study, often the same construct re-solved
-# with a different ligand. Resampling entries treats 70 correlated depositions as 70 draws
-# and gives an interval that is too narrow to describe the archive. The primary interval is
-# therefore a CLUSTER bootstrap over publication groups; the entry-level interval is kept
-# for comparison and labelled as a within-study interval, which is what it measures.
-_lab = [str(x).split("_")[0].split()[0][:4] for x in labels]
 try:
+    from analysis_contracts import validate_ensemble_diff
     from study_groups import load_study_groups
 except ModuleNotFoundError:
+    from scripts.analysis_contracts import validate_ensemble_diff
     from scripts.study_groups import load_study_groups
-_grp = load_study_groups(_lab)
-groups = {}
-for i, p in enumerate(_lab):
-    groups.setdefault(_grp[p], []).append(i)
-gkeys = sorted(groups)
-print(f"study groups: {len(gkeys)} over {n} conformers "
-      f"(largest {max(len(v) for v in groups.values())})")
 
-def boot(sampler, ndraw=2000, seed=42):
+
+ROOT = Path(__file__).resolve().parents[1]
+OUTPUT = ROOT / "data" / "pca_robust.npz"
+NDRAW = 2_000
+SEED = 42
+IndexSampler = Callable[[np.random.Generator], Sequence[int] | np.ndarray]
+
+
+def pca_pc1(coordinates: np.ndarray, difference_axis: np.ndarray) -> tuple[float, float]:
+    """Return PC1 variance fraction and absolute overlap with a fixed unit axis."""
+
+    coordinates = np.asarray(coordinates, dtype=float)
+    difference_axis = np.asarray(difference_axis, dtype=float)
+    if coordinates.ndim != 3 or coordinates.shape[2] != 3:
+        raise ValueError(
+            f"coordinates must have shape n x residues x 3, found {coordinates.shape}"
+        )
+    if coordinates.shape[0] < 2:
+        raise ValueError("PCA requires at least two conformers")
+    expected_axis_shape = (coordinates.shape[1] * 3,)
+    if difference_axis.shape != expected_axis_shape:
+        raise ValueError(
+            f"difference axis must have shape {expected_axis_shape}, "
+            f"found {difference_axis.shape}"
+        )
+    if not np.isfinite(coordinates).all() or not np.isfinite(difference_axis).all():
+        raise ValueError("PCA inputs must contain only finite values")
+    axis_norm = float(np.linalg.norm(difference_axis))
+    if not np.isclose(axis_norm, 1.0, rtol=0.0, atol=1e-10):
+        raise ValueError(f"difference axis must be unit length, found norm={axis_norm:.16g}")
+
+    flattened = coordinates.reshape(coordinates.shape[0], -1)
+    centered = flattened - flattened.mean(axis=0)
+    sample_count = centered.shape[0]
+    gram = centered @ centered.T / (sample_count - 1)
+    eigenvalues, eigenvectors = np.linalg.eigh(gram)
+    order = np.argsort(eigenvalues)[::-1]
+    positive_total = float(eigenvalues[eigenvalues > 0].sum())
+    pc1 = centered.T @ eigenvectors[:, order[0]]
+    norm = float(np.linalg.norm(pc1))
+    if norm < 1e-12 or positive_total <= 0:
+        return 0.0, 0.0
+    return float(eigenvalues[order[0]] / positive_total), float(
+        abs((pc1 / norm) @ difference_axis)
+    )
+
+
+def bootstrap(
+    conformers: np.ndarray,
+    difference_axis: np.ndarray,
+    open_indices: set[int],
+    sampler: IndexSampler,
+    *,
+    draws: int = NDRAW,
+    seed: int = SEED,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Run a deterministic bootstrap for an index sampler."""
+
+    if isinstance(draws, bool) or not isinstance(draws, int) or draws <= 0:
+        raise ValueError("draws must be a positive integer")
+    conformers = np.asarray(conformers)
+    if conformers.ndim != 3 or conformers.shape[2] != 3:
+        raise ValueError(
+            f"conformers must have shape n x residues x 3, found {conformers.shape}"
+        )
+    if any(
+        isinstance(index, bool)
+        or not isinstance(index, (int, np.integer))
+        or not 0 <= int(index) < conformers.shape[0]
+        for index in open_indices
+    ):
+        raise ValueError("open_indices contains an out-of-range or non-integral index")
+
     rng = np.random.default_rng(seed)
-    vfs, ovs, n_open_zero = [], [], 0
-    for _ in range(ndraw):
-        idx = sampler(rng)
-        if len(idx) < 3:
-            continue
-        if not any(j in set(open_idx.tolist()) for j in idx):
-            n_open_zero += 1                 # resample contains no open structure
-        vf, ov = pca_pc1(confs[idx], diff)
-        vfs.append(vf * 100); ovs.append(ov)
-    return np.array(vfs), np.array(ovs), n_open_zero
+    variance_fractions: list[float] = []
+    overlaps: list[float] = []
+    no_open = 0
+    for _ in range(draws):
+        indices = list(sampler(rng))
+        if len(indices) < 3:
+            raise ValueError("bootstrap sampler returned fewer than three conformers")
+        if any(
+            isinstance(index, bool)
+            or not isinstance(index, (int, np.integer))
+            or not 0 <= int(index) < conformers.shape[0]
+            for index in indices
+        ):
+            raise ValueError("bootstrap sampler returned an invalid conformer index")
+        normalized_indices = [int(index) for index in indices]
+        if not open_indices.intersection(normalized_indices):
+            no_open += 1
+        variance, overlap = pca_pc1(conformers[normalized_indices], difference_axis)
+        variance_fractions.append(100.0 * variance)
+        overlaps.append(overlap)
+    return np.asarray(variance_fractions), np.asarray(overlaps), no_open
 
-vfs_e, ovs_e, _ = boot(lambda r: r.integers(0, n, n))
-vfs, ovs, zero_open = boot(
-    lambda r: [i for g in r.choice(len(gkeys), len(gkeys)) for i in groups[gkeys[g]]])
 
-print(f"Entry bootstrap (within-study) var {vfs_e.mean():.0f}% "
-      f"[{np.percentile(vfs_e,2.5):.0f},{np.percentile(vfs_e,97.5):.0f}]  "
-      f"overlap {ovs_e.mean():.3f} "
-      f"[{np.percentile(ovs_e,2.5):.2f},{np.percentile(ovs_e,97.5):.2f}]")
-print(f"Cluster bootstrap ({len(gkeys)} groups)  var {vfs.mean():.0f}% "
-      f"[{np.percentile(vfs,2.5):.0f},{np.percentile(vfs,97.5):.0f}]  "
-      f"overlap {ovs.mean():.3f} "
-      f"[{np.percentile(ovs,2.5):.2f},{np.percentile(ovs,97.5):.2f}]")
-print(f"  {zero_open} of {len(vfs)} cluster resamples ({zero_open/len(vfs)*100:.1f}%) "
-      f"contain no open structure")
+def build_results() -> dict[str, object]:
+    """Recompute the complete deterministic robustness payload."""
 
-# --- leave-one-open-out jackknife ---
-print("Leave-one-open-out:")
-for i in open_idx:
-    keep = [j for j in range(n) if j != i]
-    vf, ov = pca_pc1(confs[keep], diff)
-    print(f"  drop {labels[i]}: PC1 var {vf*100:.1f}%  overlap {ov:.3f}")
+    with (
+        np.load(ROOT / "data" / "crbn_ensemble.ens.npz", allow_pickle=False) as ensemble,
+        np.load(ROOT / "data" / "pca_diffvec.npz", allow_pickle=False) as difference,
+    ):
+        conformers, labels, open_mask, difference_axis = validate_ensemble_diff(
+            ensemble, difference
+        )
 
-# --- drop ALL open structures ---
-keep = [j for j in range(n) if j not in open_idx]
-vf_c, ov_c = pca_pc1(confs[keep], diff)
-print(f"Drop all {len(open_idx)} open: PC1 var {vf_c*100:.1f}%  overlap {ov_c:.3f} (n={len(keep)})")
+    n_conformers = conformers.shape[0]
+    label_list = labels.tolist()
+    open_indices = set(np.where(open_mask)[0].tolist())
+    variance_full, overlap_full = pca_pc1(conformers, difference_axis)
+    print(f"Full ensemble: PC1 var {variance_full * 100:.1f}%  overlap {overlap_full:.3f}")
 
-# --- save the array consumed by build_figS3.py ---
-# vfs/ovs are the CLUSTER bootstrap, which is what Fig S3 and the Limitations now quote.
-# The entry-level arrays travel with them so the difference stays visible.
-payload = {
-    "vfs": vfs,
-    "ovs": ovs,
-    "vf0": vf0,
-    "ov0": ov0,
-    "open_labels": labels[open_idx],
-    "vf_closed": vf_c,
-    "vfs_entry": vfs_e,
-    "ovs_entry": ovs_e,
-    "n_groups": len(gkeys),
-    "frac_resamples_without_open": zero_open / len(vfs),
-}
-if "--verify" in sys.argv:
-    with np.load("data/pca_robust.npz", allow_pickle=False) as current:
-        missing = sorted(set(payload) - set(current.files))
-        if missing:
-            raise AssertionError(f"pca_robust.npz is missing fields: {missing}")
-        for key, expected in payload.items():
-            actual = current[key]
-            if np.issubdtype(np.asarray(expected).dtype, np.number):
-                if not np.allclose(actual, expected, rtol=1e-12, atol=1e-12):
-                    raise AssertionError(f"pca_robust.npz field differs: {key}")
-            elif not np.array_equal(actual, expected):
-                raise AssertionError(f"pca_robust.npz field differs: {key}")
-    print("verify OK: pca_robust.npz matches the 38-group fail-closed bootstrap")
-else:
-    np.savez("data/pca_robust.npz", **payload)
-    print("wrote data/pca_robust.npz")
+    study_for = load_study_groups(label_list)
+    grouped_indices: dict[str, list[int]] = {}
+    for index, pdb_id in enumerate(label_list):
+        grouped_indices.setdefault(study_for[pdb_id], []).append(index)
+    group_keys = sorted(grouped_indices)
+    if not group_keys:
+        raise ValueError("no source-study groups are available for bootstrap resampling")
+    print(
+        f"study groups: {len(group_keys)} over {n_conformers} conformers "
+        f"(largest {max(len(value) for value in grouped_indices.values())})"
+    )
+
+    entry_variance, entry_overlap, _ = bootstrap(
+        conformers,
+        difference_axis,
+        open_indices,
+        lambda rng: rng.integers(0, n_conformers, n_conformers),
+    )
+    cluster_variance, cluster_overlap, no_open = bootstrap(
+        conformers,
+        difference_axis,
+        open_indices,
+        lambda rng: [
+            index
+            for group_index in rng.choice(len(group_keys), len(group_keys))
+            for index in grouped_indices[group_keys[int(group_index)]]
+        ],
+    )
+
+    print(
+        f"Entry bootstrap (within-study) var {entry_variance.mean():.0f}% "
+        f"[{np.percentile(entry_variance, 2.5):.0f},"
+        f"{np.percentile(entry_variance, 97.5):.0f}]  "
+        f"overlap {entry_overlap.mean():.3f} "
+        f"[{np.percentile(entry_overlap, 2.5):.2f},"
+        f"{np.percentile(entry_overlap, 97.5):.2f}]"
+    )
+    print(
+        f"Cluster bootstrap ({len(group_keys)} groups) var {cluster_variance.mean():.0f}% "
+        f"[{np.percentile(cluster_variance, 2.5):.0f},"
+        f"{np.percentile(cluster_variance, 97.5):.0f}]  "
+        f"overlap {cluster_overlap.mean():.3f} "
+        f"[{np.percentile(cluster_overlap, 2.5):.2f},"
+        f"{np.percentile(cluster_overlap, 97.5):.2f}]"
+    )
+    print(
+        f"  {no_open} of {len(cluster_variance)} cluster resamples "
+        f"({no_open / len(cluster_variance) * 100:.1f}%) contain no open structure"
+    )
+
+    print("Leave-one-open-out:")
+    for index in sorted(open_indices):
+        keep = [candidate for candidate in range(n_conformers) if candidate != index]
+        variance, overlap = pca_pc1(conformers[keep], difference_axis)
+        print(f"  drop {labels[index]}: PC1 var {variance * 100:.1f}%  overlap {overlap:.3f}")
+
+    closed_indices = [index for index in range(n_conformers) if index not in open_indices]
+    closed_variance, closed_overlap = pca_pc1(conformers[closed_indices], difference_axis)
+    print(
+        f"Drop all {len(open_indices)} open: PC1 var {closed_variance * 100:.1f}%  "
+        f"overlap {closed_overlap:.3f} (n={len(closed_indices)})"
+    )
+
+    return {
+        "vfs": cluster_variance,
+        "ovs": cluster_overlap,
+        "vf0": variance_full,
+        "ov0": overlap_full,
+        "open_labels": labels[open_mask],
+        "vf_closed": closed_variance,
+        "vfs_entry": entry_variance,
+        "ovs_entry": entry_overlap,
+        "n_groups": len(group_keys),
+        "frac_resamples_without_open": no_open / len(cluster_variance),
+    }
+
+
+def verify_exact(results: dict[str, object]) -> None:
+    """Require exact schema/dtypes and a portable tight match for float arrays."""
+
+    with np.load(OUTPUT, allow_pickle=False) as committed:
+        if set(committed.files) != set(results):
+            raise AssertionError(
+                f"{OUTPUT}: key mismatch; expected={sorted(results)}, "
+                f"found={sorted(committed.files)}"
+            )
+        for key, recomputed in results.items():
+            candidate = np.asarray(recomputed)
+            stored = committed[key]
+            if candidate.shape != stored.shape:
+                raise AssertionError(
+                    f"{OUTPUT}: shape mismatch for {key}: "
+                    f"recomputed={candidate.shape}, stored={stored.shape}"
+                )
+            if candidate.dtype != stored.dtype:
+                raise AssertionError(
+                    f"{OUTPUT}: dtype mismatch for {key}: "
+                    f"recomputed={candidate.dtype}, stored={stored.dtype}"
+                )
+            if candidate.dtype.kind in "fc":
+                matches = (
+                    np.isfinite(candidate).all()
+                    and np.isfinite(stored).all()
+                    and np.allclose(candidate, stored, rtol=1e-12, atol=1e-12)
+                )
+            else:
+                matches = np.array_equal(candidate, stored)
+            if not matches:
+                raise AssertionError(f"{OUTPUT}: exact array mismatch for {key}")
+
+
+def atomic_save(results: dict[str, object]) -> None:
+    """Atomically replace the stored result after writing the full archive."""
+
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target_mode = stat.S_IMODE(OUTPUT.stat().st_mode)
+    except FileNotFoundError:
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+        target_mode = 0o666 & ~current_umask
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=OUTPUT.parent, suffix=".npz", delete=False) as handle:
+            temporary = Path(handle.name)
+        np.savez(temporary, **results)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.chmod(temporary, target_mode)
+        os.replace(temporary, OUTPUT)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify", action="store_true", help="recompute and compare without writing")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    results = build_results()
+    if args.verify:
+        verify_exact(results)
+        print(
+            f"verify OK: schema and dtypes match {OUTPUT}; "
+            "finite float arrays agree within 1e-12"
+        )
+    else:
+        atomic_save(results)
+        print(f"wrote {OUTPUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -32,10 +32,25 @@ Usage    python scripts/assembly_rigid_null.py [--verify] [--write-assembly]
 
 The assembly eigendecomposition is a 4452 x 4452 problem and takes a few minutes.
 """
-import csv, json, math, sys
+import argparse, csv, json, math, sys
 from pathlib import Path
 import numpy as np
 from scipy.special import betaincc, betaincinv, gammaln
+
+try:
+    from analysis_contracts import (
+        assert_tree_close,
+        atomic_write_json,
+        atomic_write_text,
+        validate_ensemble_diff,
+    )
+except ModuleNotFoundError:
+    from scripts.analysis_contracts import (
+        assert_tree_close,
+        atomic_write_json,
+        atomic_write_text,
+        validate_ensemble_diff,
+    )
 
 CUTOFFS = (12.0, 15.0, 18.0)
 CUTOFF_ANM = 15.0          # monomer reference cutoff
@@ -144,6 +159,56 @@ def read_ca_pdb(path):
     return tag, np.array(xyz)
 
 
+def validate_mode_basis(basis, expected_rows, required_modes=NMODE):
+    """Require a finite orthonormal mode basis with the expected coordinate size."""
+    values = np.asarray(basis, dtype=float)
+    if (
+        values.ndim != 2
+        or values.shape[0] != expected_rows
+        or values.shape[1] < required_modes
+        or not np.isfinite(values).all()
+    ):
+        raise ValueError(
+            "ANM basis must be a finite two-dimensional array with shape "
+            f"({expected_rows}, >= {required_modes}); found {values.shape}"
+        )
+    checked = values[:, :required_modes]
+    if not np.allclose(
+        checked.T @ checked,
+        np.eye(required_modes),
+        atol=1e-8,
+        rtol=1e-8,
+    ):
+        raise ValueError("ANM basis columns must be orthonormal")
+    return values
+
+
+def ordered_window_indices(tags, window, chain="B"):
+    """Return indices only when one exact ordered chain window is present."""
+    residues = np.asarray(window)
+    if (
+        residues.ndim != 1
+        or residues.dtype.kind not in "iu"
+        or len(np.unique(residues)) != len(residues)
+        or np.any(np.diff(residues) <= 0)
+    ):
+        raise ValueError("analysis-window residues must be unique, integer, and increasing")
+    wanted = set(residues.tolist())
+    selected = sorted(
+        ((residue, index) for index, (tag_chain, residue) in enumerate(tags)
+         if tag_chain == chain and residue in wanted),
+        key=lambda item: item[0],
+    )
+    observed = [residue for residue, _ in selected]
+    expected = residues.tolist()
+    if observed != expected:
+        raise ValueError(
+            f"chain {chain} window does not exactly match the analysis order; "
+            f"expected {expected}, found {observed}"
+        )
+    return [index for _, index in selected]
+
+
 def anm_slow(X, cutoff, k):
     """The k slowest non-trivial ANM modes. Same Hessian as reproduce_modes.py."""
     n = len(X)
@@ -239,6 +304,11 @@ def write_assembly():
     spec.loader.exec_module(rt)
     raw = urllib.request.urlopen("https://files.rcsb.org/download/8CVP.cif.gz", timeout=120).read()
     ca = rt.parse_ca(gzip.open(io.BytesIO(raw), "rt").read())
+    window = np.array([
+        int(row["author_resnum"])
+        for row in csv.DictReader(open("data/crbn_residue_window.csv"))
+    ])
+    validate_parsed_assembly(ca, window)
     out = ["REMARK   CRBN-DDB1 open assembly 8CVP, Ca only, as deposited (author numbering).",
            "REMARK   Chain A = DDB1 (1135 Ca), chain B = CRBN (349 Ca).",
            "REMARK   Written by scripts/assembly_rigid_null.py --write-assembly from the RCSB mmCIF."]
@@ -253,12 +323,61 @@ def write_assembly():
     out.append("END")
     destination = Path("render/open_8cvp_assembly.pdb")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+    atomic_write_text(destination, "\n".join(out) + "\n")
     print(f"wrote {destination} with {n} CA")
 
 
-def main():
-    if "--write-assembly" in sys.argv:
+def validate_parsed_assembly(ca, window):
+    """Validate a freshly parsed 8CVP assembly before replacing the archived PDB."""
+    if set(ca) != {"A", "B"}:
+        raise ValueError(
+            "8CVP download must contain exactly deposited chains A and B; "
+            f"found {sorted(ca)}"
+        )
+    expected_chain_counts = {"A": 1135, "B": 349}
+    chain_counts = {chain: len(ca[chain]) for chain in sorted(ca)}
+    if chain_counts != expected_chain_counts:
+        raise ValueError(
+            "8CVP download chain counts do not match the deposited assembly; "
+            f"expected {expected_chain_counts}, found {chain_counts}"
+        )
+    for chain in ("A", "B"):
+        coordinates = np.asarray(list(ca[chain].values()), dtype=float)
+        if coordinates.shape != (expected_chain_counts[chain], 3) or not np.isfinite(
+            coordinates
+        ).all():
+            raise ValueError(f"8CVP download has invalid coordinates for chain {chain}")
+    residues = np.asarray(window)
+    if (
+        residues.ndim != 1
+        or residues.dtype.kind not in "iu"
+        or len(np.unique(residues)) != len(residues)
+        or np.any(np.diff(residues) <= 0)
+    ):
+        raise ValueError("analysis-window residues must be unique, integer, and increasing")
+    wanted = set(residues.tolist())
+    observed = sorted(residue for residue in ca["B"] if residue in wanted)
+    if observed != residues.tolist():
+        raise ValueError(
+            "downloaded chain B does not exactly contain the analysis-window residues"
+        )
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--verify", action="store_true", help="recompute and compare without writing")
+    mode.add_argument(
+        "--write-assembly",
+        action="store_true",
+        help="refresh the deposited assembly before recomputing the output",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.write_assembly:
         write_assembly()
 
     window = np.array([int(r["author_resnum"]) for r in
@@ -267,32 +386,11 @@ def main():
     mode_artifact = np.load("data/crbn_anm_modes.npz", allow_pickle=False)
     V = np.asarray(mode_artifact["anm_eigvecs"])
     ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
-    required_ensemble = {"_confs", "_labels"}
-    required_difference = {"labels", "open_mask", "diff_vec"}
-    if not required_ensemble.issubset(ens.files) or not required_difference.issubset(diff_artifact.files):
-        raise ValueError("ensemble or difference artifact is missing required arrays")
-    conformers = np.asarray(ens["_confs"])
-    ensemble_labels = np.asarray(ens["_labels"])
-    difference_labels = np.asarray(diff_artifact["labels"])
-    if conformers.ndim != 3 or conformers.shape[2] != 3:
-        raise ValueError(f"invalid ensemble coordinate shape: {conformers.shape}")
-    if ensemble_labels.shape != (conformers.shape[0],) or not np.array_equal(
-        ensemble_labels, difference_labels
-    ):
-        raise ValueError("difference-artifact labels do not match ensemble label order")
-    open_mask = np.asarray(diff_artifact["open_mask"])
-    if open_mask.dtype.kind != "b" or open_mask.shape != ensemble_labels.shape:
-        raise ValueError("difference-artifact open_mask is not a matching boolean vector")
-    if int(open_mask.sum()) != 5 or not np.isfinite(conformers).all():
-        raise ValueError("ensemble must contain finite coordinates and exactly five open conformers")
-    dvec = np.asarray(diff_artifact["diff_vec"], dtype=float)
-    if dvec.shape != (conformers.shape[1] * 3,) or not np.isfinite(dvec).all():
-        raise ValueError(f"invalid difference-axis shape: {dvec.shape}")
-    dnorm = float(np.linalg.norm(dvec))
-    if not np.isclose(dnorm, 1.0, atol=1e-10, rtol=0.0):
-        raise ValueError(f"difference axis is not unit length: {dnorm}")
-    if V.shape[0] != dvec.size or V.shape[1] < NMODE or not np.isfinite(V).all():
-        raise ValueError(f"ANM basis is incompatible with the difference axis: {V.shape}")
+    conformers, ensemble_labels, _open_mask, dvec = validate_ensemble_diff(
+        ens,
+        diff_artifact,
+    )
+    V = validate_mode_basis(V, dvec.size)
     if "resnums" not in mode_artifact.files or not np.array_equal(mode_artifact["resnums"], window):
         raise ValueError("ANM residue labels do not match the analysis-window order")
     labels = [str(value) for value in ensemble_labels]
@@ -302,10 +400,9 @@ def main():
 
     # ---- (1) the same network, built on the assembly that was actually deposited ------
     tag, Xa = read_ca_pdb("render/open_8cvp_assembly.pdb")
-    wset = set(window.tolist())
-    sel = [i for i, (c, r) in enumerate(tag) if c == "B" and r in wset]
-    sel = [sel[i] for i in np.argsort([tag[i][1] for i in sel])]
-    assert len(sel) == len(window), f"CRBN window incomplete in the assembly: {len(sel)}"
+    if Xa.shape != (len(tag), 3) or not np.isfinite(Xa).all():
+        raise ValueError(f"invalid assembly coordinate array: {Xa.shape}")
+    sel = ordered_window_indices(tag, window, chain="B")
 
     # bring the assembly into the ensemble frame using the CRBN window only, so the mode
     # projections are scored against the axis in the frame the axis is defined in
@@ -321,7 +418,15 @@ def main():
     # DDB1 and therefore partition this two-chain assembly exactly.
     crbn_mask = np.array([c == "B" for c, _ in tag])
     ddb1_mask = np.array([c == "A" for c, _ in tag])
-    assert np.all(crbn_mask | ddb1_mask), "8CVP reference must contain only CRBN and DDB1"
+    if not np.all(crbn_mask | ddb1_mask):
+        raise ValueError("8CVP reference must contain only CRBN and DDB1 chains")
+    chain_counts = {"A": int(ddb1_mask.sum()), "B": int(crbn_mask.sum())}
+    expected_chain_counts = {"A": 1135, "B": 349}
+    if chain_counts != expected_chain_counts:
+        raise ValueError(
+            "8CVP reference chain counts do not match the deposited assembly; "
+            f"expected {expected_chain_counts}, found {chain_counts}"
+        )
     two_body = onb(np.hstack([rigid_dof(Xa, crbn_mask), rigid_dof(Xa, ddb1_mask)]))
 
     def mode_character(vec):
@@ -554,18 +659,17 @@ def main():
         out["rigid_domain_null"]["equal_displacement_boundary"]
     )
     out["rigid_domain_null"]["connectivity_constrained"]["deprecated_alias"] = True
-    if "--verify" not in sys.argv:
-        with open("data/assembly_rigid_null.json", "w") as fh:
-            json.dump(out, fh, indent=1)
-            fh.write("\n")
+    if not args.verify:
+        atomic_write_json(Path("data/assembly_rigid_null.json"), out)
 
-    if "--verify" in sys.argv:
+    if args.verify:
         # Cross-check the RECOMPUTED values against the committed artifact, the way
         # reproduce_modes.py --verify does. Asserting only hardcoded ranges would let the
         # committed JSON drift away from the code that claims to produce it -- and this
         # file carries the primary calibration, so it needs the stronger check.
         with open("data/assembly_rigid_null.json", encoding="utf-8") as fh:
             committed = json.load(fh)
+        assert_tree_close(out, committed, float_tolerance=2e-3)
         crd, cas = committed["rigid_domain_null"], committed["assembly"]
         drift = []
         checked = 0

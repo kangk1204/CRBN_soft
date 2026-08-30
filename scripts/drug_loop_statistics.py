@@ -33,18 +33,21 @@ Inputs   data/crbn_ensemble.ens.npz, data/crbn_residue_window.csv,
 Outputs  data/drug_loop_statistics.json
 Usage    python scripts/drug_loop_statistics.py [--verify] [--no-network]
 """
+import argparse
 import csv
 import gzip
 import json
 import os
 import sys
 from itertools import combinations
+from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import softmode_lib as L
 import reproduce_tensor as R
+from analysis_contracts import assert_tree_close, atomic_write_json
 
 DRUG = [378, 380, 386]                    # H378/W380/W386 drug-binding pocket loop
 ZN = [323, 326, 391, 394]                 # structural zinc site
@@ -55,6 +58,97 @@ NDRAW = 20000
 SEED = 20260720
 REF = "8CVP"
 MIN_BFACTOR_COVERAGE = 0.9
+
+
+def validate_core_inputs(ensemble, resnums, curation_rows, fluctuation_rows):
+    """Validate the shared conformer, residue, and reference-profile ordering."""
+    required = {"_confs", "_labels"}
+    missing = required - set(ensemble.files)
+    if missing:
+        raise ValueError(f"ensemble artifact is missing required arrays: {sorted(missing)}")
+
+    conformers = np.asarray(ensemble["_confs"], dtype=float)
+    raw_labels = np.asarray(ensemble["_labels"])
+    if (
+        conformers.ndim != 3
+        or conformers.shape[0] < 2
+        or conformers.shape[1] < 1
+        or conformers.shape[2] != 3
+        or not np.isfinite(conformers).all()
+    ):
+        raise ValueError(
+            "ensemble coordinates must be a finite n x residues x 3 array, "
+            f"found {conformers.shape}"
+        )
+    if raw_labels.shape != (conformers.shape[0],):
+        raise ValueError(
+            f"ensemble labels must have shape ({conformers.shape[0]},), "
+            f"found {raw_labels.shape}"
+        )
+    labels = [str(value).strip().upper() for value in raw_labels]
+    if any(len(label) != 4 or not label.isalnum() for label in labels):
+        raise ValueError("ensemble labels must be four-character alphanumeric PDB identifiers")
+    if len(labels) != len(set(labels)):
+        raise ValueError("ensemble labels must be unique")
+    if labels.count(REF) != 1:
+        raise ValueError(f"ensemble must contain exactly one {REF} reference conformer")
+
+    residues = np.asarray(resnums)
+    if residues.ndim != 1 or residues.shape[0] != conformers.shape[1]:
+        raise ValueError(
+            "residue labels must be one-dimensional and match the coordinate order, "
+            f"found {residues.shape} for {conformers.shape[1]} residues"
+        )
+    if residues.dtype.kind not in "iu":
+        raise ValueError(f"residue labels must be integers, found dtype={residues.dtype}")
+    residues = residues.astype(int, copy=False)
+    if len(np.unique(residues)) != len(residues):
+        raise ValueError("residue labels must be unique")
+    if np.any(np.diff(residues) <= 0):
+        raise ValueError("residue labels must be strictly increasing in coordinate order")
+    required_residues = set(DRUG + ZN)
+    missing_residues = sorted(required_residues - set(residues.tolist()))
+    if missing_residues:
+        raise ValueError(f"functional residues are missing from the analysis window: {missing_residues}")
+
+    methods = {}
+    allowed_methods = {"X-ray", "cryo-EM"}
+    for row in curation_rows:
+        pdb = str(row.get("pdb", "")).strip().upper()
+        method = str(row.get("method", "")).strip()
+        if not pdb or not method or pdb in methods:
+            raise ValueError(f"invalid or duplicate curation row for {pdb!r}")
+        if method not in allowed_methods:
+            raise ValueError(f"invalid structure method for {pdb}: {method!r}")
+        methods[pdb] = method
+    if set(methods) != set(labels):
+        raise ValueError(
+            "curation labels do not exactly match the ensemble; "
+            f"missing={sorted(set(labels) - set(methods))}, "
+            f"extra={sorted(set(methods) - set(labels))}"
+        )
+
+    if len(fluctuation_rows) != len(residues):
+        raise ValueError(
+            f"reference fluctuation table has {len(fluctuation_rows)} rows; "
+            f"expected {len(residues)}"
+        )
+    try:
+        reference_residues = np.array(
+            [int(row["resnum"]) for row in fluctuation_rows],
+            dtype=int,
+        )
+        reference_anm = np.array(
+            [float(row["anm_sqfluct"]) for row in fluctuation_rows],
+            dtype=float,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("reference fluctuation table has invalid required fields") from exc
+    if not np.array_equal(reference_residues, residues):
+        raise ValueError("reference fluctuation residue order does not match the analysis window")
+    if not np.isfinite(reference_anm).all():
+        raise ValueError("reference ANM fluctuation profile contains non-finite values")
+    return conformers, labels, residues, methods, reference_anm
 
 
 def percentile_of(values, idx, universe=None):
@@ -110,13 +204,13 @@ def trio_null(profile, tbd_idx, obs_idx, ndraw=NDRAW, seed=SEED):
 
 def fetch_bfactor_cif(pdb, cache_only=False):
     """Read a mmCIF from the local analysis cache, optionally without network fallback."""
-    path = os.path.join("data", "_cif_cache", f"{pdb.upper()}.cif.gz")
-    if os.path.exists(path):
+    path = R.CACHE / f"{pdb.upper()}.cif.gz"
+    if cache_only:
+        if not path.exists():
+            raise FileNotFoundError(f"{pdb}: cached mmCIF not found at {path}")
         with gzip.open(path, "rt") as fh:
             return fh.read()
-    if cache_only:
-        raise FileNotFoundError(f"{pdb}: cached mmCIF not found at {path}")
-    return L.fetch_cif(pdb, cache=os.path.join("data", "_cif_cache"))
+    return R.fetch_cif(pdb)
 
 
 def choose_crbn_chain_for_bfactor(ca, pdb, resnums):
@@ -169,18 +263,42 @@ def bfactor_profile(labels, resnums, methods, cache_only=False, verbose=True):
                                     "chain_selection_rule":
                                         "metadata-validated reproduce_tensor.select_chain: "
                                         "use committed primary-chain override where present, "
-                                        "otherwise highest CRBN-chain window coverage"}
+                                        "otherwise lowest exact-Q96SW2 auth-chain id"}
 
 
-def main():
-    verify = "--verify" in sys.argv
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify", action="store_true", help="recompute and compare without writing")
+    parser.add_argument(
+        "--no-network",
+        action="store_true",
+        help="require every crystallographic source record to be cached",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    verify = bool(args.verify)
+    L.CACHE_WRITES_ENABLED = not verify
+    R.CACHE_WRITES_ENABLED = not verify
     ens = np.load("data/crbn_ensemble.ens.npz", allow_pickle=False)
-    confs = ens["_confs"]
-    labels = [str(x)[:4] for x in ens["_labels"]]
-    resnums = np.array([int(r["author_resnum"]) for r in
-                        csv.DictReader(open("data/crbn_residue_window.csv"))])
-    methods = {r["pdb"]: r["method"] for r in
-               csv.DictReader(open("data/crbn_curation_log.csv"))}
+    with open("data/crbn_residue_window.csv", encoding="utf-8", newline="") as handle:
+        window_rows = list(csv.DictReader(handle))
+    try:
+        resnums = np.array([int(row["author_resnum"]) for row in window_rows], dtype=int)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("analysis-window table has invalid author_resnum values") from exc
+    with open("data/crbn_curation_log.csv", encoding="utf-8", newline="") as handle:
+        curation_rows = list(csv.DictReader(handle))
+    with open("data/crbn_residue_fluctuations.csv", encoding="utf-8", newline="") as handle:
+        fluctuation_rows = list(csv.DictReader(handle))
+    confs, labels, resnums, methods, anm_comm = validate_core_inputs(
+        ens,
+        resnums,
+        curation_rows,
+        fluctuation_rows,
+    )
     idx = {int(r): k for k, r in enumerate(resnums)}
     drug_i = [idx[r] for r in DRUG]
     zn_i = [idx[r] for r in ZN]
@@ -188,9 +306,32 @@ def main():
 
     ref = confs[labels.index(REF)]
     w, V = L.modes(L.anm_hessian(ref, CUTOFF), 20)
+    if (
+        w.ndim != 1
+        or w.shape[0] < NMODES_FLUCT
+        or V.shape != (ref.size, w.shape[0])
+        or not np.isfinite(w).all()
+        or not np.isfinite(V).all()
+        or np.any(w <= 0)
+    ):
+        raise ValueError(f"invalid ANM eigensystem: eigenvalues={w.shape}, modes={V.shape}")
     anm_f = L.sqfluct(w, V, NMODES_FLUCT)
     # ensemble PCA fluctuation: eigenvalue-weighted over the top 10 PCs
     P, var, scores = L.ensemble_pca(confs)
+    if (
+        P.ndim != 2
+        or P.shape[0] != ref.size
+        or P.shape[1] < 10
+        or scores.ndim != 2
+        or scores.shape[0] != len(confs)
+        or scores.shape[1] < 10
+        or not np.isfinite(P).all()
+        or not np.isfinite(var).all()
+        or not np.isfinite(scores).all()
+    ):
+        raise ValueError(
+            f"invalid PCA result: modes={P.shape}, variance={var.shape}, scores={scores.shape}"
+        )
     ev = (scores ** 2).sum(0) / (len(confs) - 1)
     pca_f = np.zeros(len(resnums))
     for m in range(10):
@@ -199,9 +340,16 @@ def main():
     ci, cj, _ = L.contact_pairs(ref, CUTOFF)
     contact = np.bincount(np.concatenate([ci, cj]), minlength=len(ref)).astype(float)
 
+    for name, profile in {
+        "ANM fluctuation": anm_f,
+        "PCA fluctuation": pca_f,
+        "contact count": contact,
+    }.items():
+        values = np.asarray(profile)
+        if values.shape != resnums.shape or not np.isfinite(values).all():
+            raise ValueError(f"{name} must be finite and match the residue order")
+
     # committed profiles must match the recomputed ones
-    comm = list(csv.DictReader(open("data/crbn_residue_fluctuations.csv")))
-    anm_comm = np.array([float(r["anm_sqfluct"]) for r in comm])
     rho_check = L.spearman(anm_f, anm_comm)[0]
 
     out = {"meta": {"drug_residues": DRUG, "zn_residues": ZN, "tbd_window": list(TBD),
@@ -211,20 +359,20 @@ def main():
                     "spearman_recomputed_vs_committed_anm_profile": rho_check}}
 
     # ------------------------------------------------ B-factor profile ---
-    bprof, bpdbs, bstats = (None, [], {})
-    no_network = "--no-network" in sys.argv
-    try:
-        bprof, bpdbs, bstats = bfactor_profile(labels, resnums, methods,
-                                               cache_only=no_network)
-    except FileNotFoundError as exc:
-        if no_network:
-            print(f"B-factor profile skipped: --no-network and {exc}")
-        else:
-            raise
+    no_network = bool(args.no_network)
+    bprof, bpdbs, bstats = bfactor_profile(
+        labels,
+        resnums,
+        methods,
+        cache_only=no_network,
+    )
+    if bprof is None:
+        raise RuntimeError("no complete X-ray B-factor profiles were available")
 
     profiles = {"anm_fluctuation": anm_f, "pca_fluctuation": pca_f}
-    if bprof is not None:
-        profiles["experimental_bfactor"] = bprof
+    if np.asarray(bprof).shape != resnums.shape or not np.isfinite(bprof).all():
+        raise ValueError("experimental B-factor profile must be finite and match residue order")
+    profiles["experimental_bfactor"] = bprof
     out["bfactor_provenance"] = {
         "n_xray_entries_used": len(bpdbs), "entries": bpdbs,
         "normalisation": "per-structure z-score over the 269-residue window, then averaged",
@@ -375,15 +523,18 @@ def main():
                             "cannot reach p < 0.05 at these sample sizes"],
     }
 
+    artifact_path = Path("data/drug_loop_statistics.json")
     if not verify:
-        with open("data/drug_loop_statistics.json", "w", encoding="utf-8") as _fh:
-            json.dump(out, _fh, indent=1)
+        atomic_write_json(artifact_path, out)
     print(f"\nprimary: PCA-fluctuation trio null p = {pca_p:.4f}; "
           f"ANM p = {anm_p:.4f}; "
           + (f"B-factor p = {b_p:.3f} (negative control)"
              if b_p is not None else "B-factor control skipped/unavailable"))
 
     if verify:
+        with artifact_path.open(encoding="utf-8") as handle:
+            committed = json.load(handle)
+        assert_tree_close(out, committed, float_tolerance=1e-8)
         c = comparison
         assert abs(rho_check - 1.0) < 1e-6 or rho_check > 0.99, rho_check
         # (a) small-sample limit
