@@ -296,7 +296,7 @@ B 8U15 1 1140
     )
 
 
-def test_main_builders_execute_directory_setup_before_bundle_validation(tmp_path):
+def test_main_builders_are_root_relative_and_do_not_write_to_the_calling_directory(tmp_path):
     builders = [
         "build_fig1.py",
         "build_fig2.py",
@@ -316,10 +316,8 @@ def test_main_builders_execute_directory_setup_before_bundle_validation(tmp_path
             check=False,
         )
         assert result.returncode != 0, f"{name} unexpectedly ran without its data bundle"
-        assert (work / "figures" / "vector").is_dir(), name
-        assert (work / "figures" / "panels").is_dir(), name
-        if name == "build_fig4.py":
-            assert "pymol -cq scripts/render_fig4_pocket.py" in result.stderr
+        assert not (work / "figures").exists(), name
+        assert str(ROOT) in result.stderr, name
 
 
 def test_figure_build_helpers_create_dirs_and_fail_with_generator_command(tmp_path):
@@ -429,8 +427,8 @@ def test_rigid_null_figure_and_table_consumers_use_exact_distribution():
     tables = (SCRIPTS / "build_tables.py").read_text(encoding="utf-8")
     assert '"p_exact"' in figure
     assert '"p_empirical"' not in figure
-    assert "Probability density (exact null)" in figure
-    assert "_null_density" in figure
+    assert "Exact-null density" in figure
+    assert "exact_null_density" in figure
     assert "p_empirical" not in tables
     assert "n_draws" not in tables
 

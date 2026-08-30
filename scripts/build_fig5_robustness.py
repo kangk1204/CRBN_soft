@@ -1,133 +1,366 @@
 #!/usr/bin/env python3
-"""Build main Fig 5: ANM intrinsic-prediction robustness.
-Panels: (a) endpoint sweep, (b) rigid-domain null, (c) cutoff stability, (d) leave-one-out.
+"""Build main Fig. 5: robustness of the intrinsic ANM prediction.
 
-Panel (b) shows the null that can fail. The isotropic null it replaces is passed by
-any structured collective direction (closed-form tail 2e-143) and is kept only in
-data/anm_null_significance.json; the transition is a rigid interdomain swing, so the
-question worth asking is whether mode 1 picks the right axis INSIDE that space.
-
-Inputs: data/anm_robustness.json, data/anm_null_significance.json,
-        data/assembly_rigid_null.json, data/crbn_ensemble.ens.npz
+The four panels retain the frozen endpoint, exact matched-subspace null,
+contact-cutoff and leave-one-out records. This builder changes presentation
+only; it does not refit a model, draw a random null, or alter a reported value.
 """
-from figure_package_utils import prepare_figure_dirs, require_rigid_null_schema
 
-FIGURES, VECTOR, _ = prepare_figure_dirs()
+from __future__ import annotations
 
-import json, math, numpy as np, matplotlib
-matplotlib.use("Agg"); import matplotlib.pyplot as plt
+import json
+import math
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+import numpy as np
 
-rob=json.load(open("data/anm_robustness.json")); nul=json.load(open("data/anm_null_significance.json"))
-arn=json.load(open("data/assembly_rigid_null.json"))
-ens=np.load("data/crbn_ensemble.ens.npz",allow_pickle=False)
-confs=ens["_confs"]; labels=[str(x) for x in ens["_labels"]]
-# Derive the open set from the canonical difference artifact and require exact agreement
-# with the robustness artifact. Missing or stale classification data must not silently fall
-# back to a literal list.
-dv=np.load("data/pca_diffvec.npz",allow_pickle=False)
-if not {"labels","open_mask"}.issubset(dv.files):
-    raise ValueError("data/pca_diffvec.npz lacks labels/open_mask; rerun reproduce_modes.py")
-dv_labels=np.asarray([str(value) for value in dv["labels"]])
-dv_mask=np.asarray(dv["open_mask"])
-if dv_mask.dtype.kind != "b" or dv_mask.shape != dv_labels.shape:
-    raise ValueError("data/pca_diffvec.npz open_mask is not a matching boolean vector")
-OPENL=[str(value) for value in rob["open_set"]]
-derived_open={label for label,is_open in zip(dv_labels,dv_mask) if is_open}
-if len(OPENL) != len(set(OPENL)) or set(OPENL) != derived_open:
-    raise ValueError(f"open-set mismatch between robustness and difference artifacts: {OPENL} vs {sorted(derived_open)}")
-mask=np.array([l in OPENL for l in labels])
-if int(mask.sum()) != len(OPENL):
-    raise ValueError("ensemble does not contain each canonical open structure exactly once")
-dvec=(confs[mask].mean(0)-confs[~mask].mean(0)).reshape(-1); dvec/=np.linalg.norm(dvec)
-# Panel b null: exact absolute-directional-cosine distributions INSIDE each
-# rigid-motion subspace. If C is the absolute cosine between a fixed direction
-# and a uniformly random unit direction in d dimensions, then
-# C^2 ~ Beta(1/2, (d-1)/2). Plotting the closed-form density keeps the figure
-# deterministic and avoids presenting exact inference as a finite simulation.
-_rd=require_rigid_null_schema(arn)
-_null_x=np.linspace(0.0,1.0,1001)
-def _null_density(dim):
-    b=0.5*(dim-1)
-    normaliser=2.0*math.exp(math.lgamma(0.5+b)-math.lgamma(0.5)-math.lgamma(b))
-    return normaliser*np.power(np.clip(1.0-_null_x**2,0.0,None),b-1.0)
-def _clean_svg(path):
-    with open(path, encoding="utf-8") as f:
-        txt=f.read()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(line.rstrip() for line in txt.splitlines()) + "\n")
-# All reported rigid nulls are drawn. Bond-length preservation is the literal first-order
-# connectivity condition; equal boundary displacement is the stronger orientation-freezing
-# sensitivity. Both remain visible so the panel does not imply universal significance.
-_bond=_rd["bond_length_preserving_boundary"]
-_equal=_rd["equal_displacement_boundary"]
-_two=_rd["two_block"]
-_three=_rd["three_block"]
-null_rigid=_null_density(_two["internal_dim"])
-null_rigid3=_null_density(_three["internal_dim"])
-null_bond=_null_density(_bond["internal_dim"])
-null_equal=_null_density(_equal["internal_dim"])
+from figure_package_utils import require_rigid_null_schema, save_figure_set
+from figure_style import (
+    BLACK,
+    BLUE,
+    CLOSED,
+    DARK_GREY,
+    LIGHT_GREY,
+    MAGENTA,
+    OPEN,
+    PALE_BLUE,
+    PALE_GREEN,
+    PALE_ORANGE,
+    PURPLE,
+    apply_publication_style,
+    finish_axis,
+    panel_label,
+)
 
-C_OPEN="#3b6ea5"; C_CLOSED="#e07b39"; C_NULL="#b8b8b8"; C_OBS="#D55E00"; META="#555555"; C_BOND="#0072B2"; C_EQUAL="#CC79A7"
-plt.rcParams.update({"font.family":"DejaVu Sans","font.size":8.5,"axes.linewidth":0.8,
-    "xtick.major.width":0.8,"ytick.major.width":0.8,"axes.spines.top":False,"axes.spines.right":False,
-    "pdf.fonttype":42,"ps.fonttype":42})
-fig,axs=plt.subplots(2,2,figsize=(8.2,6.6)); axA,axB,axC,axD=axs.flat
-OPENs=rob["open_set"]; CLOSEDs=rob["closed_endpoints"]; labs=OPENs+CLOSEDs
-m1=[rob["table"][l]["15.0"]["mode1_overlap"] for l in labs]
-best=[rob["table"][l]["15.0"]["best_overlap"] for l in labs]
-rank=[rob["table"][l]["15.0"]["best_mode_rank"] for l in labs]
-x=np.arange(len(labs)); cols=[C_OPEN]*len(OPENs)+[C_CLOSED]*len(CLOSEDs)
-axA.scatter(x,m1,s=46,c=cols,zorder=3); axA.scatter(x,best,s=46,facecolors="none",edgecolors=cols,linewidths=1.4,zorder=3)
-for xi,b,r in zip(x,best,rank):
-    if r>1: axA.annotate(f"m{r}",(xi,b),textcoords="offset points",xytext=(0,6),ha="center",fontsize=7.5,color=META)
-for xi,a,b,r in zip(x,m1,best,rank):
-    if r>1: axA.plot([xi,xi],[a,b],color=C_CLOSED,lw=0.8,alpha=0.5,zorder=2)
-axA.axhspan(0.73,0.77,color=C_OPEN,alpha=0.10,zorder=0)
-axA.set_xticks(x); axA.set_xticklabels(labs,rotation=45,ha="right",fontsize=7.5)
-axA.set_ylabel("Directional overlap with open–closed axis"); axA.set_ylim(0,0.85)
 
-axA.legend(handles=[Line2D([],[],marker='o',ls='',mfc=C_OPEN,mec=C_OPEN,label='open endpoint'),
-    Line2D([],[],marker='o',ls='',mfc=C_CLOSED,mec=C_CLOSED,label='closed endpoint'),
-    Line2D([],[],marker='o',ls='',mfc='w',mec=META,label='best-mode directional overlap')],fontsize=7.5,frameon=False,loc="lower left")
-_p2=_two["p_exact"]; _p3=_three["p_exact"]
-_pb=_bond["p_exact"]; _pe=_equal["p_exact"]
-_o2=_two["observed_direction_cosine_in_subspace"]
-_o3=_three["observed_direction_cosine_in_subspace"]
-_ob=_bond["observed_direction_cosine_in_subspace"]
-_oe=_equal["observed_direction_cosine_in_subspace"]
-axB.fill_between(_null_x,null_rigid,color=C_NULL,alpha=0.65,zorder=2,
-         label=f"2-lobe (obs={_o2:.2f}; p={_p2:.3f})")
-axB.plot(_null_x,null_rigid3,color=META,lw=1.0,zorder=3,
-         label=f"3-domain (obs={_o3:.2f}; p={_p3:.3f})")
-axB.plot(_null_x,null_bond,color=C_BOND,lw=1.3,zorder=4,
-         label=f"bond-length (obs={_ob:.2f}; p={_pb:.3f})")
-axB.plot(_null_x,null_equal,color=C_EQUAL,lw=1.3,zorder=4,
-         label=f"equal displacement (obs={_oe:.2f}; p={_pe:.3f})")
-for observed,color,style in ((_o2,C_OBS,"-"),(_o3,META,"--"),
-                             (_ob,C_BOND,"-."),(_oe,C_EQUAL,":")):
-    axB.axvline(observed,color=color,lw=1.5,ls=style,zorder=5)
-axB.legend(fontsize=7.5,frameon=True,facecolor="white",edgecolor="none",framealpha=0.92,
-    loc="upper left",bbox_to_anchor=(0.0,0.99),borderpad=0.25,labelspacing=0.25)
-axB.set_xlabel("Matched-subspace mode-1 direction cosine")
-axB.set_ylabel("Probability density (exact null)"); axB.set_xlim(0,1.03)
-cuts=[float(c) for c in rob["cutoffs"]]
-for l in OPENs:
-    axC.plot(cuts,[rob["table"][l][str(c)]["mode1_overlap"] for c in rob["cutoffs"]],"-o",color=C_OPEN,alpha=0.55,ms=3.5,lw=1.0)
-axC.plot(cuts,[np.mean([rob["table"][l][str(c)]["mode1_overlap"] for l in OPENs]) for c in rob["cutoffs"]],"-",color=C_OBS,lw=1.8,zorder=4,label="open mean")
-axC.axvspan(15,18,color=C_OPEN,alpha=0.08); axC.set_xlabel("ANM contact cutoff (Å)"); axC.set_ylabel("Mode-1 directional overlap")
-axC.set_ylim(0.2,0.85); axC.legend(fontsize=7.5,frameon=False,loc="lower right")
-loo_c=nul["leave_one_closed_out"]; loo_o=nul["leave_one_open_out"]; xd=np.arange(2)
-means=[loo_c["mean"],loo_o["mean"]]; los=[loo_c["min"],loo_o["min"]]; his=[loo_c["max"],loo_o["max"]]
-axD.errorbar(xd,means,yerr=[np.array(means)-np.array(los),np.array(his)-np.array(means)],fmt='o',ms=8,color=C_OPEN,ecolor=META,elinewidth=1.2,capsize=4,zorder=3)
-axD.axhline(0.744,color=C_OBS,lw=1.0,ls="--",alpha=0.7,zorder=2)
-axD.annotate("full-ensemble 0.744",(1.4,0.744),fontsize=7.5,color=C_OBS,va="bottom",ha="right")
-axD.set_xticks(xd); axD.set_xticklabels(["drop one\nclosed (n=65)","drop one\nopen (n=5)"],fontsize=7.5)
-axD.set_xlim(-0.5,1.5); axD.set_ylim(0.70,0.78); axD.set_ylabel("Mode-1 directional overlap")
-for ax,l in zip([axA,axB,axC,axD],"abcd"):
-    ax.text(-0.14,1.06,f"({l})",transform=ax.transAxes,fontweight="bold",fontsize=11,va="top",ha="right")
-# left margin widened so the right-aligned (a)/(c) letters clear the figure edge
-fig.subplots_adjust(left=0.105,right=0.985,top=0.94,bottom=0.10,hspace=0.42,wspace=0.30)
-fig.savefig(FIGURES / "Fig5.png",dpi=300); fig.savefig(VECTOR / "Fig5.pdf"); fig.savefig(VECTOR / "Fig5.svg")
-_clean_svg(VECTOR / "Fig5.svg")
-print("Fig5 written")
+ROOT = Path(__file__).resolve().parents[1]
+FIGURE_WIDTH_IN = 6.40  # allows for tight-bbox text padding below 170 mm
+ROBUSTNESS_INPUT = ROOT / "data" / "anm_robustness.json"
+NULL_INPUT = ROOT / "data" / "anm_null_significance.json"
+RIGID_NULL_INPUT = ROOT / "data" / "assembly_rigid_null.json"
+ENSEMBLE_INPUT = ROOT / "data" / "crbn_ensemble.ens.npz"
+DIFFERENCE_INPUT = ROOT / "data" / "pca_diffvec.npz"
+
+NULL_X = np.linspace(0.0, 1.0, 1001)
+MODEL_ROWS = (
+    ("two_block", "2-lobe", DARK_GREY, "-"),
+    ("three_block", "3-domain", PURPLE, "--"),
+    ("bond_length_preserving_boundary", "bond-length", BLUE, "-."),
+    ("equal_displacement_boundary", "equal displacement", MAGENTA, ":"),
+)
+
+
+def exact_null_density(dimension: int) -> np.ndarray:
+    """Density of |cos(theta)| for a random direction in ``dimension`` D."""
+    beta = 0.5 * (dimension - 1)
+    normalizer = 2.0 * math.exp(
+        math.lgamma(0.5 + beta) - math.lgamma(0.5) - math.lgamma(beta)
+    )
+    return normalizer * np.power(
+        np.clip(1.0 - NULL_X**2, 0.0, None), beta - 1.0
+    )
+
+
+def load_and_validate() -> tuple[dict, dict, dict]:
+    robustness = json.loads(ROBUSTNESS_INPUT.read_text(encoding="utf-8"))
+    null = json.loads(NULL_INPUT.read_text(encoding="utf-8"))
+    rigid = require_rigid_null_schema(
+        json.loads(RIGID_NULL_INPUT.read_text(encoding="utf-8")),
+        str(RIGID_NULL_INPUT),
+    )
+
+    # Re-derive the open set from the canonical difference-vector artifact and
+    # require exact agreement with both the robustness record and ensemble.
+    with np.load(ENSEMBLE_INPUT, allow_pickle=False) as ensemble:
+        labels = np.asarray([str(value) for value in ensemble["_labels"]])
+    with np.load(DIFFERENCE_INPUT, allow_pickle=False) as difference:
+        if not {"labels", "open_mask"}.issubset(difference.files):
+            raise ValueError("pca_diffvec.npz lacks labels/open_mask")
+        difference_labels = np.asarray([str(value) for value in difference["labels"]])
+        difference_mask = np.asarray(difference["open_mask"])
+
+    if (
+        difference_mask.dtype.kind != "b"
+        or difference_mask.shape != difference_labels.shape
+    ):
+        raise ValueError("pca_diffvec.npz open_mask is not a matching boolean vector")
+    expected_open = {
+        label
+        for label, is_open in zip(difference_labels, difference_mask)
+        if is_open
+    }
+    reported_open = [str(value) for value in robustness["open_set"]]
+    if len(reported_open) != len(set(reported_open)) or set(reported_open) != expected_open:
+        raise ValueError(
+            "open-set mismatch between robustness and difference artifacts: "
+            f"{reported_open} versus {sorted(expected_open)}"
+        )
+    if sum(label in expected_open for label in labels) != len(expected_open):
+        raise ValueError("ensemble does not contain every canonical open structure once")
+
+    endpoints = reported_open + [str(value) for value in robustness["closed_endpoints"]]
+    if len(endpoints) != 10 or len(endpoints) != len(set(endpoints)):
+        raise ValueError("Fig. 5a requires ten unique endpoint structures")
+    if [float(value) for value in robustness["cutoffs"]] != [10, 12, 13, 15, 16, 18]:
+        raise ValueError("unexpected ANM cutoff series")
+    return robustness, null, rigid
+
+
+def format_p(value: float) -> str:
+    if value < 0.001:
+        return f"p = {value:.5f}"
+    return f"p = {value:.3f}"
+
+
+def draw_endpoint_panel(ax, robustness: dict) -> None:
+    open_labels = robustness["open_set"]
+    closed_labels = robustness["closed_endpoints"]
+    labels = open_labels + closed_labels
+    records = [robustness["table"][label]["15.0"] for label in labels]
+    y = np.arange(len(labels))
+
+    ax.axhspan(-0.5, len(open_labels) - 0.5, color=PALE_BLUE, zorder=0)
+    ax.axhspan(len(open_labels) - 0.5, len(labels) - 0.5, color=PALE_ORANGE, zorder=0)
+    for index, record in enumerate(records):
+        color = OPEN if index < len(open_labels) else CLOSED
+        mode1 = float(record["mode1_overlap"])
+        best = float(record["best_overlap"])
+        rank = int(record["best_mode_rank"])
+        if rank > 1:
+            ax.plot([mode1, best], [index, index], color=color, linewidth=1.2, alpha=0.58)
+            ax.scatter(
+                [best], [index], s=45, facecolor="white", edgecolor=color,
+                linewidth=1.35, zorder=4,
+            )
+            ax.annotate(
+                f"m{rank}", (best, index), xytext=(5, 0), textcoords="offset points",
+                color=color, fontsize=8.0, va="center", ha="left",
+            )
+        ax.scatter(
+            [mode1], [index], s=38, color=color, edgecolor="white",
+            linewidth=0.45, zorder=5,
+        )
+
+    ax.axhline(len(open_labels) - 0.5, color="white", linewidth=1.4, zorder=1)
+    ax.set_yticks(y, labels)
+    colors = [OPEN] * len(open_labels) + [CLOSED] * len(closed_labels)
+    for tick, color in zip(ax.get_yticklabels(), colors):
+        tick.set_color(color)
+        tick.set_fontweight("bold")
+    ax.invert_yaxis()
+    ax.set_xlim(0.0, 0.84)
+    ax.set_xticks(np.arange(0.0, 0.81, 0.2))
+    ax.set_xlabel("Directional overlap with open–closed axis")
+    handles = [
+        Patch(facecolor=PALE_BLUE, edgecolor="none", label="open endpoint"),
+        Patch(facecolor=PALE_ORANGE, edgecolor="none", label="closed endpoint"),
+        Line2D([], [], marker="o", linestyle="", markerfacecolor=BLACK,
+               markeredgecolor="white", label="mode 1"),
+        Line2D([], [], marker="o", linestyle="", markerfacecolor="white",
+               markeredgecolor=BLACK, label="best higher mode"),
+    ]
+    ax.legend(
+        handles=handles, ncol=2, loc="lower left", bbox_to_anchor=(0.0, 1.01),
+        borderaxespad=0.0, fontsize=8.0,
+    )
+    finish_axis(ax, grid="x")
+    ax.tick_params(which="both", top=False, right=False)
+    panel_label(ax, "a", x=-0.20, y=1.10)
+
+
+def draw_rigid_null_panel(ax_density, ax_result, rigid: dict) -> None:
+    handles: list[Line2D] = []
+    for key, label, color, linestyle in MODEL_ROWS:
+        record = rigid[key]
+        density = exact_null_density(int(record["internal_dim"]))
+        ax_density.plot(
+            NULL_X, density, color=color, linestyle=linestyle,
+            linewidth=1.45, zorder=3,
+        )
+        observed = float(record["observed_direction_cosine_in_subspace"])
+        observed_density = float(np.interp(observed, NULL_X, density))
+        ax_density.vlines(
+            observed, 0, observed_density, color=color, linestyle=linestyle,
+            linewidth=1.15, alpha=0.90, zorder=4,
+        )
+        handles.append(
+            Line2D(
+                [], [], color=color, linestyle=linestyle,
+                label=f"{label}, d = {int(record['internal_dim'])}",
+            )
+        )
+
+    two_density = exact_null_density(int(rigid["two_block"]["internal_dim"]))
+    ax_density.fill_between(NULL_X, two_density, color=LIGHT_GREY, alpha=0.42, zorder=1)
+    ax_density.set_xlim(0.0, 1.0)
+    ax_density.set_ylim(bottom=0.0)
+    ax_density.set_ylabel("Exact-null density")
+    ax_density.tick_params(axis="x", labelbottom=False)
+    ax_density.set_title(
+        "Exact Beta nulls in matched subspaces", loc="left", pad=4,
+        fontsize=8.0, fontweight="bold", color=DARK_GREY,
+    )
+    ax_density.legend(
+        handles=handles, ncol=1, loc="upper right", fontsize=8.0,
+        labelspacing=0.16, handlelength=1.65, borderaxespad=0.25,
+    )
+    finish_axis(ax_density)
+    ax_density.tick_params(which="both", top=False, right=False)
+    panel_label(ax_density, "b", x=-0.19, y=1.10)
+
+    result_rows = list(MODEL_ROWS)
+    y_positions = np.arange(len(result_rows))[::-1]
+    for y, (key, _label, color, _linestyle) in zip(y_positions, result_rows):
+        record = rigid[key]
+        observed = float(record["observed_direction_cosine_in_subspace"])
+        ax_result.hlines(y, 0.0, observed, color=LIGHT_GREY, linewidth=0.8, zorder=1)
+        ax_result.scatter(
+            [observed], [y], s=32, color=color, edgecolor="white",
+            linewidth=0.45, zorder=3,
+        )
+        ax_result.text(
+            0.02, y, format_p(float(record["p_exact"])), color=BLACK,
+            fontsize=8.0, va="center", ha="left",
+        )
+    ax_result.set_yticks(y_positions, [row[1] for row in result_rows])
+    ax_result.set_xlim(0.0, 1.0)
+    ax_result.set_ylim(-0.65, len(result_rows) - 0.35)
+    ax_result.set_xlabel("Observed direction cosine")
+    ax_result.tick_params(axis="y", labelsize=8.0, pad=2)
+    finish_axis(ax_result, grid="x")
+    ax_result.tick_params(which="both", top=False, right=False)
+
+
+def draw_cutoff_panel(ax, robustness: dict) -> None:
+    cutoffs = np.asarray([float(value) for value in robustness["cutoffs"]])
+    open_labels = robustness["open_set"]
+    values = np.asarray(
+        [
+            [
+                float(robustness["table"][label][str(raw)]["mode1_overlap"])
+                for raw in robustness["cutoffs"]
+            ]
+            for label in open_labels
+        ]
+    )
+    for row in values:
+        ax.plot(
+            cutoffs, row, color=BLUE, alpha=0.30, linewidth=0.95,
+            marker="o", markersize=3.0, markerfacecolor="white",
+            markeredgewidth=0.65,
+        )
+    mean = values.mean(axis=0)
+    ax.plot(
+        cutoffs, mean, color=BLUE, linewidth=2.1, marker="o",
+        markersize=4.2, markeredgecolor="white", markeredgewidth=0.5, zorder=5,
+    )
+    ax.axvspan(15.0, 18.0, color=PALE_GREEN, zorder=0)
+    ax.axvline(15.0, color=DARK_GREY, linestyle="--", linewidth=0.85, zorder=1)
+    ax.text(
+        0.98, 0.97, "15–18 Å stability range", transform=ax.transAxes,
+        fontsize=8.0, color=DARK_GREY, ha="right", va="top",
+    )
+    ax.set_xlim(9.6, 18.4)
+    ax.set_ylim(0.20, 0.82)
+    ax.set_xticks(cutoffs)
+    ax.set_xlabel("ANM contact cutoff (Å)")
+    ax.set_ylabel("Mode-1 directional overlap")
+    ax.legend(
+        handles=[
+            Line2D(
+                [], [], color=BLUE, alpha=0.35, marker="o",
+                markerfacecolor="white", label="five open references",
+            ),
+            Line2D([], [], color=BLUE, linewidth=2.1, marker="o", label="mean"),
+        ],
+        ncol=1, loc="lower right", fontsize=8.0,
+    )
+    finish_axis(ax, grid="y")
+    ax.tick_params(which="both", top=False, right=False)
+    panel_label(ax, "c", x=-0.19)
+
+
+def draw_leave_one_out_panel(ax, null: dict) -> None:
+    closed = null["leave_one_closed_out"]
+    open_ = null["leave_one_open_out"]
+    records = [closed, open_]
+    x = np.arange(2)
+    means = np.asarray([float(record["mean"]) for record in records])
+    lows = np.asarray([float(record["min"]) for record in records])
+    highs = np.asarray([float(record["max"]) for record in records])
+    errors = np.vstack([means - lows, highs - means])
+    full = float(null["observed_mode1_overlap"])
+
+    ax.errorbar(
+        x, means, yerr=errors, fmt="o", markersize=7.0, color=BLUE,
+        markeredgecolor="white", markeredgewidth=0.6, ecolor=DARK_GREY,
+        elinewidth=1.2, capsize=4.0, zorder=4,
+    )
+    ax.axhline(full, color=CLOSED, linestyle="--", linewidth=1.0, zorder=2)
+    ax.text(
+        0.98, full - 0.030, f"full ensemble = {full:.3f}",
+        transform=ax.get_yaxis_transform(), color=CLOSED, fontsize=8.0,
+        ha="right", va="top",
+    )
+    for index, (mean, low, high) in enumerate(zip(means, lows, highs)):
+        ax.annotate(
+            f"mean {mean:.4f}\nrange {low:.4f}–{high:.4f}",
+            (index, high), xytext=(0, 40 if index == 0 else 8),
+            textcoords="offset points",
+            fontsize=8.0, color=BLACK, ha="center", va="bottom",
+        )
+    ax.set_xticks(
+        x,
+        [
+            f"drop one closed\n(n = {int(closed['n'])})",
+            f"drop one open\n(n = {int(open_['n'])})",
+        ],
+    )
+    ax.set_xlim(-0.55, 1.55)
+    # Keep the complete metric domain: the narrow ranges must not look like a
+    # large biological effect merely because of an expanded axis.
+    ax.set_ylim(0.0, 1.0)
+    ax.set_yticks(np.arange(0.0, 1.01, 0.25))
+    ax.set_ylabel("Mode-1 directional overlap")
+    finish_axis(ax, grid="y")
+    ax.tick_params(which="both", top=False, right=False)
+    panel_label(ax, "d", x=-0.19)
+
+
+def main() -> None:
+    robustness, null, rigid = load_and_validate()
+    apply_publication_style("Fig5")
+
+    fig = plt.figure(figsize=(FIGURE_WIDTH_IN, 6.10), dpi=300)
+    outer = fig.add_gridspec(
+        2, 2, left=0.105, right=0.985, top=0.94, bottom=0.085,
+        hspace=0.39, wspace=0.37,
+    )
+    ax_a = fig.add_subplot(outer[0, 0])
+    null_grid = outer[0, 1].subgridspec(
+        2, 1, height_ratios=[1.65, 1.0], hspace=0.06,
+    )
+    ax_b_density = fig.add_subplot(null_grid[0, 0])
+    ax_b_result = fig.add_subplot(null_grid[1, 0], sharex=ax_b_density)
+    ax_c = fig.add_subplot(outer[1, 0])
+    ax_d = fig.add_subplot(outer[1, 1])
+
+    draw_endpoint_panel(ax_a, robustness)
+    draw_rigid_null_panel(ax_b_density, ax_b_result, rigid)
+    draw_cutoff_panel(ax_c, robustness)
+    draw_leave_one_out_panel(ax_d, null)
+
+    save_figure_set(fig, ROOT, "Fig5")
+    plt.close(fig)
+    print("Fig5 written from frozen endpoint, exact-null, cutoff and leave-one-out records")
+
+
+if __name__ == "__main__":
+    main()

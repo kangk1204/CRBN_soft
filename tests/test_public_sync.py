@@ -32,7 +32,10 @@ class Artifact(dict):
 
 
 def valid_mobility_inputs(module):
-    residues = np.array(sorted(module.DRUG + module.ZN), dtype=int)
+    focal = set(module.ZN)
+    for definition in module.POCKET_DEFINITIONS.values():
+        focal.update(definition)
+    residues = np.array(sorted(focal), dtype=int)
     ensemble = Artifact(
         _confs=np.zeros((2, len(residues), 3), dtype=float),
         _labels=np.array([module.REF, "1ABC"]),

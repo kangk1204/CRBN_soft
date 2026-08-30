@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Context statistics for the numbers quoted in the text but not produced by a figure script.
 
-Eight blocks, all recomputed from a matching input bundle:
+Eight blocks, all recomputed from committed data:
 
  1  random-subspace RMSIP null  -- the missing baseline for RMSIP = 0.641 (two random
     orthonormal 10-D subspaces of R^807 already share sqrt(k/d) = 0.111)
@@ -19,8 +19,9 @@ Eight blocks, all recomputed from a matching input bundle:
  7  autocorrelation-aware residue statistics -- 269 spatially autocorrelated residues are
     not 269 independent ones; contact number, n_eff-corrected Spearman p, and a
     circular-shift p for the gap-flanking comparison
- 8  exact drug-vs-zinc tests    -- 3 vs 4 residues cannot reach p < 0.057, so the
-    percentiles and the effect size carry the claim, not the p-value
+ 8  pocket-definition tests    -- the three UniProt ligand annotations are kept
+    separate from an objective 5FQD ligand-contact shell, preventing the three
+    annotated residues from being over-generalised to the whole pocket
 
 Inputs   data/crbn_anm_modes.npz, data/crbn_ensemble.ens.npz, data/pca_diffvec.npz,
          data/anm_null_significance.json, data/anm_robustness.json,
@@ -46,6 +47,10 @@ from analysis_contracts import (                                       # noqa: E
     validate_ensemble_diff,
 )
 TBD_START = 318          # thalidomide-binding domain
+POCKET_CONTACT_CUTOFF_A = 4.5
+POCKET_STRUCTURE = "5FQD"
+POCKET_CHAIN = "B"
+POCKET_LIGAND = "LVY"
 
 
 def pc1_fraction(M):
@@ -68,6 +73,55 @@ def read_ca(pdb, resnums, chain="B"):
             if ri in want and ri not in got:
                 got[ri] = [float(ln[30:38]), float(ln[38:46]), float(ln[46:54])]
     return np.array([got[int(r)] for r in resnums if int(r) in got])
+
+
+def ligand_contact_shell(pdb, *, chain, ligand, cutoff_A, common_residues):
+    """Return resolved protein residues contacting a ligand by heavy atoms.
+
+    The PDB fixed-column parser deliberately accepts only the named chain and
+    primary/blank alternate locations.  Hydrogen atoms are excluded.  Both the
+    complete resolved shell and its intersection with the common analysis
+    window are returned so missing sensor-loop residues remain explicit.
+    """
+    protein = {}
+    ligand_atoms = []
+    for line in open(pdb, encoding="utf-8"):
+        record = line[:6].strip()
+        if record not in {"ATOM", "HETATM"} or len(line) < 54:
+            continue
+        if line[21].strip() != chain or line[16:17] not in {" ", "A"}:
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        if not element:
+            element = "".join(character for character in line[12:16] if character.isalpha())[:1]
+        if element == "H":
+            continue
+        try:
+            xyz = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+        except ValueError:
+            continue
+        residue_name = line[17:20].strip()
+        if record == "ATOM":
+            try:
+                residue_number = int(line[22:26])
+            except ValueError:
+                continue
+            protein.setdefault(residue_number, []).append(xyz)
+        elif residue_name == ligand:
+            ligand_atoms.append(xyz)
+    if not protein or not ligand_atoms:
+        raise ValueError(f"{pdb} lacks chain {chain} protein atoms or ligand {ligand}")
+    ligand_array = np.asarray(ligand_atoms, dtype=float)
+    distances = {}
+    for residue, atoms in protein.items():
+        atom_array = np.asarray(atoms, dtype=float)
+        distances[residue] = float(
+            np.linalg.norm(atom_array[:, None, :] - ligand_array[None, :, :], axis=2).min()
+        )
+    all_contacts = sorted(residue for residue, distance in distances.items() if distance <= cutoff_A)
+    common_set = {int(residue) for residue in common_residues}
+    common_contacts = [residue for residue in all_contacts if residue in common_set]
+    return all_contacts, common_contacts, distances
 
 
 def pct_rank(x):
@@ -165,7 +219,7 @@ def main(argv=None):
     rs = np.array(rs)
 
     # ---- (2) where does RMSIP^2 come from, and what variance backs PC2-PC10? ----------
-    # the input bundle's NPZ stores only 3 PCs, so the 10 PCs are recomputed here
+    # the committed npz stores only 3 PCs, so the 10 PCs are recomputed here
     Xc = (confs - confs.mean(0)).reshape(len(confs), -1)
     w, v = np.linalg.eigh(np.cov(Xc.T))
     order = np.argsort(w)[::-1]
@@ -238,26 +292,70 @@ def main(argv=None):
     # alignment between the profile and the gap positions
     _, shifted, p_shift = circular_shift_pvalue(anm, flank)
 
-    # ---- (8) exact 3-vs-4 tests, and the smallest p they could possibly reach --------
+    # ---- (8) functional annotation versus structure-defined ligand-contact shell -----
     idx = {r: i for i, r in enumerate(res)}
     tbd = res >= TBD_START
-    dg, zn = [idx[r] for r in DRUG], [idx[r] for r in ZINC]
-    functional = {}
-    for name, prof in (("anm", anm), ("pca", pcaf)):
-        pw = pct_rank(prof)
-        pt = np.full(n, np.nan); pt[tbd] = pct_rank(prof[tbd])
-        u, pv = stats.mannwhitneyu(prof[dg], prof[zn], alternative="two-sided", method="exact")
-        functional[name] = {
-            "drug_percentile_window": {str(r): float(pw[idx[r]]) for r in DRUG},
+    all_contacts, contact_shell, contact_distances = ligand_contact_shell(
+        "render/closed_5fqd_lig.pdb",
+        chain=POCKET_CHAIN,
+        ligand=POCKET_LIGAND,
+        cutoff_A=POCKET_CONTACT_CUTOFF_A,
+        common_residues=res,
+    )
+    cage_plus = sorted(set(DRUG) | {400, 402})
+    expected_contact_shell = [377, 378, 379, 380, 386, 400, 402]
+    if contact_shell != expected_contact_shell:
+        raise ValueError(
+            f"{POCKET_STRUCTURE} {POCKET_LIGAND} contact-shell drift: {contact_shell}"
+        )
+    if not set(cage_plus).issubset(contact_shell):
+        raise ValueError("canonical annotated/cage residues are not all in the 5FQD contact shell")
+    definitions = {
+        "uniprot_ligand_annotations": list(DRUG),
+        "annotated_plus_W400_F402": cage_plus,
+        "5fqd_4.5A_contact_shell_common_window": contact_shell,
+    }
+    zn = [idx[r] for r in ZINC]
+
+    def functional_summary(profile, selected):
+        selected_indices = [idx[r] for r in selected]
+        pw = pct_rank(profile)
+        pt = np.full(n, np.nan); pt[tbd] = pct_rank(profile[tbd])
+        u, pv = stats.mannwhitneyu(
+            profile[selected_indices], profile[zn], alternative="two-sided", method="exact"
+        )
+        return {
+            "residues": list(selected),
+            "group_percentile_window": {
+                str(r): float(pw[idx[r]]) for r in selected
+            },
             "zinc_percentile_window": {str(r): float(pw[idx[r]]) for r in ZINC},
-            "drug_percentile_tbd": {str(r): float(pt[idx[r]]) for r in DRUG},
+            "group_percentile_tbd": {str(r): float(pt[idx[r]]) for r in selected},
             "zinc_percentile_tbd": {str(r): float(pt[idx[r]]) for r in ZINC},
-            "drug_mean": float(prof[dg].mean()), "zinc_mean": float(prof[zn].mean()),
-            "drug_mean_percentile_tbd": float(pt[dg].mean()),
+            "group_mean": float(profile[selected_indices].mean()),
+            "zinc_mean": float(profile[zn].mean()),
+            "group_mean_percentile_window": float(pw[selected_indices].mean()),
+            "zinc_mean_percentile_window": float(pw[zn].mean()),
+            "group_mean_percentile_tbd": float(pt[selected_indices].mean()),
             "zinc_mean_percentile_tbd": float(pt[zn].mean()),
-            "mannwhitney_u": float(u), "p_exact": float(pv),
-            "rank_biserial": float(2 * u / (len(dg) * len(zn)) - 1),
+            "mannwhitney_u": float(u),
+            "p_exact": float(pv),
+            "rank_biserial": float(2 * u / (len(selected_indices) * len(zn)) - 1),
         }
+
+    functional_by_definition = {
+        definition: {
+            name: functional_summary(profile, selected)
+            for name, profile in (("anm", anm), ("pca", pcaf))
+        }
+        for definition, selected in definitions.items()
+    }
+    # Backward-compatible aliases retain the pre-specified UniProt comparison while the
+    # full object makes clear that it is not synonymous with the structural pocket.
+    functional = {
+        name: functional_by_definition["uniprot_ligand_annotations"][name]
+        for name in ("anm", "pca")
+    }
     p_floor = float(stats.mannwhitneyu([1, 2, 3], [4, 5, 6, 7],
                                        alternative="two-sided", method="exact")[1])
 
@@ -292,35 +390,67 @@ def main(argv=None):
         "mode1_overlap_common_window": float(np.abs(M["anm_eigvecs"][:, 0] @ dvec)),
     }
 
-    # ---- (9b) is the drug-vs-zinc contrast just lever-arm distance from the hinge? ----
-    # A Ca-level square fluctuation dominated by one hinge mode grows with distance from
-    # that hinge, so a group further out is more mobile for geometric reasons alone. The
-    # test is whether the contrast survives removing the distance trend.
-    X8 = confs[labels.index("8CVP")]   # open reference, 269 x 3
-    hinge_cen = X8[(window >= 258) & (window <= 315)].mean(0)
-    dist = np.linalg.norm(X8 - hinge_cen, axis=1)
-    lever = {}
+    # ---- (9b) is the pocket-vs-zinc contrast just lever-arm geometry? -----------------
+    # For a rigid rotation, square displacement grows with squared perpendicular distance
+    # from the rotation axis.  The axis is derived independently from the mean endpoint
+    # geometry after anchoring NTD+HB (scripts/hinge_geometry.py), not from the former
+    # 258-315 centroid.  The within-TBD regression is the primary control because all
+    # functional groups lie in that domain; the full-window result is retained only as a
+    # transparent sensitivity calculation across domains.
+    from hinge_geometry import compute_geometry
+
+    hinge_geometry, axis_distance, _endpoint_displacement = compute_geometry(
+        confs, om, window
+    )
+    axis_distance_sq = axis_distance ** 2
+    lever = {
+        "geometry_source": "endpoint Kabsch screw axis; data/hinge_geometry.json",
+        "distance_metric": "squared perpendicular C-alpha distance to screw axis",
+        "primary_scope": "TBD residues >=318",
+        "rotation_angle_deg": hinge_geometry["rotation_angle_deg"],
+    }
     for nm, prof in (("anm", anm), ("pca", pcaf)):
         for scope, msk in (("window", np.ones(len(window), bool)), ("tbd", window >= TBD_START)):
-            f, dd, rr = prof[msk], dist[msk], window[msk]
-            sl, ic = np.polyfit(dd, f, 1)
-            resid = f - (sl * dd + ic)
-            di = [int(np.where(rr == r)[0][0]) for r in DRUG]
+            f, dd, dd2, rr = prof[msk], axis_distance[msk], axis_distance_sq[msk], window[msk]
+            sl, ic = np.polyfit(dd2, f, 1)
+            resid = f - (sl * dd2 + ic)
             zi = [int(np.where(rr == r)[0][0]) for r in ZINC]
+            by_definition = {}
+            for definition, selected in definitions.items():
+                di = [int(np.where(rr == r)[0][0]) for r in selected]
+                by_definition[definition] = {
+                    "residues": list(selected),
+                    "group_mean_axis_distance_A": float(dd[di].mean()),
+                    "zinc_mean_axis_distance_A": float(dd[zi].mean()),
+                    "raw_difference": float(f[di].mean() - f[zi].mean()),
+                    "raw_p_exact": float(stats.mannwhitneyu(
+                        f[di], f[zi], alternative="two-sided", method="exact"
+                    )[1]),
+                    "residual_difference": float(resid[di].mean() - resid[zi].mean()),
+                    "residual_p_exact": float(stats.mannwhitneyu(
+                        resid[di], resid[zi], alternative="two-sided", method="exact"
+                    )[1]),
+                }
+            primary = by_definition["uniprot_ligand_annotations"]
             lever[f"{nm}_{scope}"] = {
-                "spearman_distance_vs_fluctuation": float(stats.spearmanr(dd, f)[0]),
-                "raw_difference": float(f[di].mean() - f[zi].mean()),
-                "raw_p_exact": float(stats.mannwhitneyu(f[di], f[zi], alternative="two-sided",
-                                                        method="exact")[1]),
-                "residual_difference": float(resid[di].mean() - resid[zi].mean()),
-                "residual_p_exact": float(stats.mannwhitneyu(resid[di], resid[zi],
-                                                             alternative="two-sided",
-                                                             method="exact")[1]),
+                "spearman_axis_distance_vs_fluctuation": float(stats.spearmanr(dd, f)[0]),
+                "pearson_axis_distance_squared_vs_fluctuation": float(
+                    stats.pearsonr(dd2, f)[0]
+                ),
+                "linear_slope_per_A2": float(sl),
+                "raw_difference": primary["raw_difference"],
+                "raw_p_exact": primary["raw_p_exact"],
+                "residual_difference": primary["residual_difference"],
+                "residual_p_exact": primary["residual_p_exact"],
+                "by_definition": by_definition,
             }
-    lever["hinge_distance_A"] = {"drug_mean": float(dist[[int(np.where(window == r)[0][0])
-                                                          for r in DRUG]].mean()),
-                                 "zinc_mean": float(dist[[int(np.where(window == r)[0][0])
-                                                          for r in ZINC]].mean())}
+    lever["axis_distance_A"] = {
+        definition: {
+            "group_mean": float(axis_distance[[idx[r] for r in selected]].mean()),
+            "zinc_mean": float(axis_distance[[idx[r] for r in ZINC]].mean()),
+        }
+        for definition, selected in definitions.items()
+    }
 
     # ---- (9c) does RMSIP depend on experimental method or resolution? -----------------
     log = {r["pdb"]: r for r in csv.DictReader(open("data/crbn_curation_log.csv"))}
@@ -412,9 +542,26 @@ def main(argv=None):
             "genuine_apo_studies": apo_studies,
             "studies_contributing_both_arms": shared_arm_studies,
         },
-        "drug_vs_zinc": dict(functional, p_exact_floor_3v4=p_floor,
-                             drug_residues=DRUG, zinc_residues=ZINC,
-                             tbd_start=TBD_START, n_tbd=int(tbd.sum())),
+        "drug_vs_zinc": dict(
+            functional,
+            p_exact_floor_3v4=p_floor,
+            drug_residues=DRUG,
+            zinc_residues=ZINC,
+            tbd_start=TBD_START,
+            n_tbd=int(tbd.sum()),
+            definitions=functional_by_definition,
+            structural_contact_shell={
+                "structure": POCKET_STRUCTURE,
+                "chain": POCKET_CHAIN,
+                "ligand": POCKET_LIGAND,
+                "heavy_atom_cutoff_A": POCKET_CONTACT_CUTOFF_A,
+                "all_resolved_contacts": all_contacts,
+                "common_window_contacts": contact_shell,
+                "minimum_heavy_atom_distance_A": {
+                    str(residue): contact_distances[residue] for residue in all_contacts
+                },
+            },
+        ),
         "seed": SEED, "n_draws": NDRAW,
     }
     if not verify:
@@ -448,14 +595,19 @@ def main(argv=None):
           f"-> mode-1 overlap {node_set['mode1_overlap']:.3f} at rank {node_set['best_mode_rank']} "
           f"(vs {node_set['mode1_overlap_common_window']:.3f} on the "
           f"{node_set['n_ca_common_window']}-residue common window)")
-    la = lever["anm_window"]; lp = lever["pca_window"]
-    print(f"lever arm: Spearman(hinge distance, ANM sqfluct) = {la['spearman_distance_vs_fluctuation']:.3f}; "
-          f"drug-zinc {la['raw_difference']:+.3f} raw -> {la['residual_difference']:+.3f} after removing "
-          f"the distance trend (exact p {la['raw_p_exact']:.3f} -> {la['residual_p_exact']:.3f})")
-    print(f"           PCA: {lp['raw_difference']:+.1f} -> {lp['residual_difference']:+.1f} "
-          f"(p {lp['raw_p_exact']:.3f} -> {lp['residual_p_exact']:.3f}); hinge distance "
-          f"drug {lever['hinge_distance_A']['drug_mean']:.1f} A vs zinc "
-          f"{lever['hinge_distance_A']['zinc_mean']:.1f} A")
+    la = lever["anm_tbd"]; lp = lever["pca_tbd"]
+    contact_pca = lp["by_definition"]["5fqd_4.5A_contact_shell_common_window"]
+    print(f"lever arm within TBD: Spearman(axis distance, ANM sqfluct) = "
+          f"{la['spearman_axis_distance_vs_fluctuation']:.3f}; "
+          f"UniProt3-zinc {la['raw_difference']:+.3f} raw -> "
+          f"{la['residual_difference']:+.3f} after squared-axis-distance regression "
+          f"(exact p {la['raw_p_exact']:.3f} -> {la['residual_p_exact']:.3f})")
+    print(f"           PCA: UniProt3 {lp['raw_difference']:+.1f} -> "
+          f"{lp['residual_difference']:+.1f} (p {lp['raw_p_exact']:.3f} -> "
+          f"{lp['residual_p_exact']:.3f}); 5FQD contact7 "
+          f"{contact_pca['raw_difference']:+.1f} -> {contact_pca['residual_difference']:+.1f} "
+          f"(p {contact_pca['raw_p_exact']:.3f} -> "
+          f"{contact_pca['residual_p_exact']:.3f})")
     print("RMSIP by subset: " + ", ".join(
         f"{k} {v['rmsip']:.3f} (n={v['n']})" for k, v in rmsip_splits.items() if isinstance(v, dict)))
     print("ligand/state association at study level: not estimable "
@@ -489,15 +641,22 @@ def main(argv=None):
         assert node_set["best_mode_rank"] == 1, node_set["best_mode_rank"]
         assert abs(node_set["mode1_overlap"] - 0.61) < 0.02, node_set["mode1_overlap"]
         assert abs(node_set["mode1_overlap_common_window"] - 0.744) < 5e-3
-        assert lever["anm_window"]["spearman_distance_vs_fluctuation"] > 0.75
-        assert lever["anm_window"]["residual_p_exact"] > 0.9, "ANM contrast should not survive"
-        assert lever["anm_tbd"]["residual_p_exact"] > 0.9
-        assert lever["pca_window"]["residual_difference"] > 0
+        assert 0.5 < lever["anm_tbd"]["spearman_axis_distance_vs_fluctuation"] < 0.7
+        assert lever["anm_tbd"]["pearson_axis_distance_squared_vs_fluctuation"] > 0.7
+        assert lever["pca_tbd"]["pearson_axis_distance_squared_vs_fluctuation"] > 0.9
+        assert lever["anm_tbd"]["residual_p_exact"] > 0.1
+        assert lever["pca_tbd"]["residual_p_exact"] > 0.1
+        contact_tbd = lever["pca_tbd"]["by_definition"][
+            "5fqd_4.5A_contact_shell_common_window"
+        ]
+        assert contact_tbd["raw_p_exact"] < 0.05
+        assert contact_tbd["residual_p_exact"] > 0.1
+        assert contact_shell == expected_contact_shell
         assert 0.45 < rmsip_splits["cryoem"]["rmsip"] < 0.70
         assert 0.55 < rmsip_splits["xray"]["rmsip"] < 0.75
         assert len(apo_studies) == 1, apo_studies
         assert shared_arm_studies == apo_studies, (shared_arm_studies, apo_studies)
-        print("verify OK: exact input-bundle artifact matches; RMSIP has a 0.111 floor, its "
+        print("verify OK: exact committed artifact matches; RMSIP has a 0.111 floor, its "
               "p is exactly 2e-143 not 5e-5, the "
               "n-matched single-cluster null is 0.51 not 0.93, the 325 pairs are one "
               "direction, 269 residues are ~54 independent ones, and 3-vs-4 cannot beat 0.057")

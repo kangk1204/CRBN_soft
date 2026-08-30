@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Do the predicted hinge residues coincide with the allosteric site found experimentally?
+"""Post hoc proximity of the kinematic CRBN hinge to the reported allosteric site.
 
-The hinge points reported here (273, 289, 315) come from sign changes in the slowest GNM
-mode, computed from open-state coordinates alone with no ligand information. While this work
-was in preparation, an allosteric site on cereblon was identified experimentally and a
-structure of CRBN-DDB1 with the site-binding compound SB-405483 was deposited (9SFM,
-10.1038/s41586-025-09994-w). That structure was already in the curated ensemble, having been
-selected by the geometric criteria alone.
+The axis-proximal residues reported here (316-320) come from the endpoint Kabsch screw-axis
+analysis in ``data/hinge_geometry.json``.  That analysis uses no ligand coordinates.  The
+distances below are a post hoc structural description in CRBN-DDB1 structure 9SFM, which
+contains the site-binding compound SB-405483 (10.1038/s41586-025-09994-w).
 
-This script asks whether the two agree. It is a test the analysis could have failed: nothing
-in the mode calculation knows where the compound binds, and a hinge is a small target -- 125
-residues of the helical bundle are resolved in this structure and the compound touches a handful.
+The earlier GNM sign-change candidates are not used: one crossed an unresolved sequence gap,
+and scalar correlation nodes do not define a three-dimensional rotation axis.
 
 Reported for contrast: lenalidomide, bound in the same crystal at the canonical TBD pocket,
 which should be far from the hinge if the two sites are distinct.
@@ -33,8 +30,8 @@ try:
 except ModuleNotFoundError:  # imported by path from the repository root
     from scripts.pdb_id import validate_pdb_id
 
-HINGE = (273, 289, 315)        # GNM slow-mode sign changes, recurrent over 30 settings
-HB = (187, 317)                # DDB1-binding helical bundle, author numbering
+HINGE = (316, 317, 318, 319, 320)  # <=2.5 A from the endpoint-derived screw axis
+JUNCTION = (187, 320)              # helical bundle plus immediate TBD boundary
 ALLOSTERIC = "A1CEG"           # SB-405483
 ORTHOSTERIC = "LVY"            # lenalidomide, canonical TBD pocket
 PDB = "9SFM"
@@ -117,43 +114,41 @@ def main():
 
     d_allo = min_dist(ALLOSTERIC)
     d_ortho = min_dist(ORTHOSTERIC)
-    hb = (resnums >= HB[0]) & (resnums <= HB[1])
+    junction = (resnums >= JUNCTION[0]) & (resnums <= JUNCTION[1])
     idx = {int(r): i for i, r in enumerate(resnums)}
 
-    # A hinge point is a single residue; the honest comparison is against the rest of the
-    # helical bundle, not against the whole protein, since the bundle is where the hinge is
-    # already known to be.
+    # The comparison distribution is the local HB/TBD junction rather than the whole fold.
     hinge_d = {r: float(d_allo[idx[r]]) for r in HINGE if r in idx}
-    hb_d = d_allo[hb]
-    n_close = int((hb_d <= 4.5).sum())
+    junction_d = d_allo[junction]
+    n_close = int((junction_d <= 4.5).sum())
 
     out = {
         "structure": PDB,
-        "note": ("Hinge residues are predicted from open-state GNM slow modes with no ligand "
-                 "information; the allosteric site was identified experimentally and "
-                 "independently. 9SFM entered the ensemble through the geometric curation "
-                 "criteria, not because of this comparison."),
+        "note": ("Axis-proximal boundary residues were defined by the endpoint Kabsch screw "
+                 "axis without ligand coordinates. Ligand distances in 9SFM are a post hoc "
+                 "structural description, not independent validation."),
         "citation_doi": "10.1038/s41586-025-09994-w",
         "allosteric_ligand": ALLOSTERIC,
         "orthosteric_ligand": ORTHOSTERIC,
-        "helical_bundle": list(HB),
-        "n_hb_residues_resolved": int(hb.sum()),
+        "axis_proximal_boundary_residues": list(HINGE),
+        "junction_comparison_region": list(JUNCTION),
+        "n_junction_residues_resolved": int(junction.sum()),
         "hinge_min_heavy_atom_distance_A": hinge_d,
-        "hb_distance_distribution_A": {
-            "median": float(np.median(hb_d)),
-            "min": float(hb_d.min()),
-            "p05": float(np.percentile(hb_d, 5)),
+        "junction_distance_distribution_A": {
+            "median": float(np.median(junction_d)),
+            "min": float(junction_d.min()),
+            "p05": float(np.percentile(junction_d, 5)),
             "n_within_4.5A": n_close,
         },
-        "hinge_percentile_within_hb": {
-            r: float((hb_d < d).mean() * 100) for r, d in hinge_d.items()
+        "hinge_percentile_within_junction": {
+            r: float((junction_d < d).mean() * 100) for r, d in hinge_d.items()
         },
         "orthosteric_contrast": {
             "hinge_min_heavy_atom_distance_A": {
                 r: float(d_ortho[idx[r]]) for r in HINGE if r in idx},
             "note": ("Lenalidomide sits in the canonical TBD pocket in the same crystal and is "
-                     "far from the hinge, so the coincidence is specific to the allosteric "
-                     "compound rather than a consequence of any ligand being present."),
+                     "far from the same boundary residues; this is a within-structure distance "
+                     "contrast and does not establish allosteric causality."),
         },
     }
 
@@ -163,21 +158,22 @@ def main():
             fh.write("\n")
         print("wrote data/hinge_allosteric_site.json")
 
-    print(f"{PDB}: {ALLOSTERIC} vs the {int(hb.sum())} resolved helical-bundle residues")
+    print(f"{PDB}: {ALLOSTERIC} vs the {int(junction.sum())} resolved junction residues")
     for r, d in hinge_d.items():
-        print(f"  hinge {r}: {d:5.2f} A  ({out['hinge_percentile_within_hb'][r]:4.1f}th "
-              f"percentile of the bundle)")
-    print(f"  bundle median {np.median(hb_d):.1f} A; {n_close} of {int(hb.sum())} "
+        print(f"  axis-proximal {r}: {d:5.2f} A  "
+              f"({out['hinge_percentile_within_junction'][r]:4.1f}th "
+              f"percentile of the junction)")
+    print(f"  junction median {np.median(junction_d):.1f} A; "
+          f"{n_close} of {int(junction.sum())} "
           f"residues within 4.5 A")
     print(f"  lenalidomide to the same hinge residues: "
           f"{', '.join(f'{v:.1f}' for v in out['orthosteric_contrast']['hinge_min_heavy_atom_distance_A'].values())} A")
 
     if verify:
-        assert all(d < 6.0 for d in hinge_d.values()), hinge_d
-        assert np.median(hb_d) > 10.0, float(np.median(hb_d))
-        # lenalidomide is 17.4-26.1 A from the three hinge residues; the contrast only
-        # needs to be large, and 20 A was a guess that the data do not meet.
-        assert all(v > 15.0 for v in
+        assert set(hinge_d) == set(HINGE), hinge_d
+        assert all(d < 7.1 for d in hinge_d.values()), hinge_d
+        assert np.median(junction_d) > 10.0, float(np.median(junction_d))
+        assert all(v > 20.0 for v in
                    out["orthosteric_contrast"]["hinge_min_heavy_atom_distance_A"].values())
         print("verify OK")
     return 0

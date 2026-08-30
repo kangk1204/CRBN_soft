@@ -68,6 +68,7 @@ CRBN_soft/
 │   ├── crbn_residue_window.csv
 │   ├── crbn_curation_log.csv
 │   ├── crbn_anm_modes.npz
+│   ├── hinge_geometry.json
 │   ├── pca_diffvec.npz
 │   └── ...
 ├── scripts/
@@ -157,8 +158,15 @@ Verification mode avoids changing tracked reference files.
 
 ## Create tables and plots
 
-After the input bundle is in place, create the required Fig. 4 pocket panel.
-This panel is a mandatory input to `build_fig4.py`, not an optional decoration:
+Figure generation uses SciencePlots with deterministic local overrides. The
+environment file includes the tested SciencePlots version. Data-bearing panels
+are generated from the supplied arrays and tables; prepared molecular renders
+are composed without pixel modification.
+
+The released external bundle contains three frozen reference renders below
+`figures/panels/`: two for Fig. 2 and one for Fig. 4. Their SHA256 values are
+checked before composition so a changed raster cannot silently produce a
+different figure. To rebuild the Fig. 4 pocket render from coordinates, run:
 
 ```bash
 conda install -c conda-forge pymol-open-source
@@ -166,9 +174,10 @@ pymol -cq scripts/render_fig4_pocket.py
 ```
 
 The renderer requires `render/closed_5fqd_lig.pdb` from the same input bundle
-and writes `figures/panels/render_closed_pocket.png`. If it is missing,
-`build_fig4.py` stops with the generation command instead of producing an
-incomplete figure.
+and writes `figures/panels/render_closed_pocket.png`. Re-rendering can change
+pixels across PyMOL versions. Validate any regenerated panel scientifically and
+visually; a new accepted raster requires an intentional hash update in a new
+software release.
 
 Then rebuild the tables and two-dimensional plots with:
 
@@ -182,18 +191,29 @@ python scripts/build_fig5_robustness.py
 python scripts/build_figS1.py
 python scripts/build_figS2.py
 python scripts/build_figS3.py
+python scripts/export_figure_source_data.py
 ```
 
-Generated files are written below `figures/` and `study/`. Both directories are
+Each main builder writes matching PNG, PDF, and SVG outputs from one code path.
+The exporter writes exact per-panel CSV records below `figures/source_data/`.
+Generated files are written below `figures/` and `study/`; both directories are
 excluded from Git.
 
-The Fig. 2 three-dimensional panels are optional placeholders in the composite
-builder. To render them, use PyMOL and the prepared files in the top-level
-`render/` directory:
+Fig. 3 reads the endpoint-derived screw-axis record and shades only residues
+316–320 near the HB–TBD boundary. Fig. 4 keeps the three UniProt ligand
+annotations separate from the seven 5FQD thalidomide heavy-atom contacts in the
+common residue window; neither definition is silently substituted for the
+other.
+
+To regenerate the Fig. 2 three-dimensional panels from the prepared files in
+the top-level `render/` directory, use PyMOL:
 
 ```bash
 pymol -cq scripts/render_fig2_3d.py
 ```
+
+As with Fig. 4, regenerated Fig. 2 rasters require scientific and visual
+validation and an intentional frozen-hash update in a new software release.
 
 ## Troubleshooting
 

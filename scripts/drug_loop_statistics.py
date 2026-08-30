@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""How strongly can the drug-binding-loop mobility claim be worded?
+"""How strongly can the ligand-site mobility claim be worded?
 
-The analysis tests whether the drug-binding loop residues (378/380/386) are more mobile
-than the structural zinc-site residues (323/326/391/394). Three objections must be met
-before that sentence can stand:
+The pre-specified UniProt ligand annotations (378/380/386) are not an exhaustive
+definition of the thalidomide-binding pocket.  This analysis therefore keeps that trio
+as the primary annotation-based comparison and reports two structural sensitivity
+definitions separately: the annotation trio plus W400/F402, and the seven residues in
+the 5FQD LVY heavy-atom contact shell that are present in the common analysis window.
+The four additional 5FQD contacts in the sensor loop (350--353) are absent from that
+window and are recorded as missing rather than silently discarded.
 
-(a) SMALL SAMPLE. A Mann-Whitney test on 3 vs 4 residues cannot reach p < 0.05: the
-    minimum attainable one-sided p at these sample sizes is 1/C(7,3) = 0.0286, and the
-    observed configuration gives 0.114. Reporting that test alone understates the
-    evidence AND overstates the rigour, so both facts are computed here.
+Three objections must be met before any residue-set comparison can stand:
+
+(a) SMALL SAMPLE. For 3 vs 4 residues, the minimum attainable exact two-sided
+    Mann-Whitney p is 2/C(7,3) = 0.0571 (one-sided minimum 0.0286). Reporting the test
+    without its discreteness overstates its resolution, so both tails and both floors
+    are computed here.
 
 (b) THE RIGHT NULL IS DOMAIN-MATCHED. Both residue sets lie in the TBD. The question is
     not "are these residues mobile relative to the whole protein" (they are, trivially,
     because the TBD is the mobile lobe) but "are they mobile relative to other TBD
-    residues". A permutation null over random TBD trios answers exactly that.
+    residues". A permutation null over random same-size TBD sets answers exactly that.
 
 (c) MOBILITY MEASURE CONFOUNDS. Two are tested. (i) Contact number: a residue with few
     neighbours fluctuates more in any elastic network, so a mobility claim may merely
@@ -23,9 +29,10 @@ before that sentence can stand:
     Both are computed on three profiles: the ANM 10-mode fluctuation, the ensemble PCA
     fluctuation, and the experimental B-factor profile from the X-ray subset.
 
-The result determines the wording. The strongest defensible version rests on the
-ensemble PCA fluctuation against the domain-matched null; the B-factor comparison is a
-null result and is reported as such.
+Percentiles use one explicit weak empirical convention throughout:
+``100 * mean(profile <= selected_value)``.  The result determines the wording.  The
+annotation-trio result is definition-specific; structural-shell sensitivity results
+must accompany it.  The B-factor comparison is a null result and is reported as such.
 
 Inputs   data/crbn_ensemble.ens.npz, data/crbn_residue_window.csv,
          data/crbn_curation_log.csv, data/crbn_residue_fluctuations.csv,
@@ -49,8 +56,24 @@ import softmode_lib as L
 import reproduce_tensor as R
 from analysis_contracts import assert_tree_close, atomic_write_json
 
-DRUG = [378, 380, 386]                    # H378/W380/W386 drug-binding pocket loop
+UNIPROT_LIGAND_ANNOTATIONS = (378, 380, 386)
+ANNOTATED_PLUS_W400_F402 = (378, 380, 386, 400, 402)
+CONTACT_SHELL_COMMON_WINDOW = (377, 378, 379, 380, 386, 400, 402)
+CONTACT_SHELL_SENSOR_LOOP_MISSING = (350, 351, 352, 353)
+CONTACT_SHELL_FULL_5FQD = (
+    *CONTACT_SHELL_SENSOR_LOOP_MISSING,
+    *CONTACT_SHELL_COMMON_WINDOW,
+)
+POCKET_DEFINITIONS = {
+    "uniprot_ligand_annotations": UNIPROT_LIGAND_ANNOTATIONS,
+    "annotated_plus_W400_F402": ANNOTATED_PLUS_W400_F402,
+    "5fqd_4.5A_contact_shell_common_window": CONTACT_SHELL_COMMON_WINDOW,
+}
+# Backwards-compatible name for the pre-specified annotation trio.  It must not be
+# interpreted as an exhaustive pocket definition.
+DRUG = list(UNIPROT_LIGAND_ANNOTATIONS)
 ZN = [323, 326, 391, 394]                 # structural zinc site
+PERCENTILE_CONVENTION = "100 * mean(profile <= selected value)"
 TBD = (318, 426)
 CUTOFF = 15.0
 NMODES_FLUCT = 10
@@ -106,7 +129,9 @@ def validate_core_inputs(ensemble, resnums, curation_rows, fluctuation_rows):
         raise ValueError("residue labels must be unique")
     if np.any(np.diff(residues) <= 0):
         raise ValueError("residue labels must be strictly increasing in coordinate order")
-    required_residues = set(DRUG + ZN)
+    required_residues = set(ZN)
+    for definition in POCKET_DEFINITIONS.values():
+        required_residues.update(definition)
     missing_residues = sorted(required_residues - set(residues.tolist()))
     if missing_residues:
         raise ValueError(f"functional residues are missing from the analysis window: {missing_residues}")
@@ -152,32 +177,61 @@ def validate_core_inputs(ensemble, resnums, curation_rows, fluctuation_rows):
 
 
 def percentile_of(values, idx, universe=None):
-    """Mean within-universe percentile of the residues at `idx`."""
+    """Mean weak empirical percentile for the residues at ``idx``.
+
+    For each selected value ``x``, the percentile is
+    ``100 * mean(universe_values <= x)``.  Including ties and the selected residue
+    matches ``context_stats.py`` and the Figure 4 source-data convention.
+    """
     u = np.arange(len(values)) if universe is None else np.asarray(universe)
     v = values[u]
     pct = []
     for k in idx:
-        pct.append(100.0 * (v < values[k]).mean())
+        pct.append(100.0 * (v <= values[k]).mean())
     return float(np.mean(pct))
 
 
 def mannwhitney_one_sided(a, b):
-    """Exact one-sided Mann-Whitney (P(a > b)) by full enumeration, plus the minimum
-    attainable p at these sample sizes."""
+    """Exact Mann-Whitney by full label enumeration.
+
+    The return keeps the historical one-sided ``P(a > b)`` value and also reports the
+    symmetric two-sided tail used by ``context_stats.py`` and Figure 4.
+    """
     a, b = np.asarray(a, float), np.asarray(b, float)
     n, m = len(a), len(b)
     U = sum((x > y) + 0.5 * (x == y) for x in a for y in b)
     pooled = np.concatenate([a, b])
-    ge = tot = 0
+    ge = extreme = tot = 0
+    permutation_u = []
+    centre = n * m / 2.0
+    observed_deviation = abs(U - centre)
     for c in combinations(range(n + m), n):
         aa = pooled[list(c)]
         bb = pooled[[i for i in range(n + m) if i not in c]]
         u = sum((x > y) + 0.5 * (x == y) for x in aa for y in bb)
         tot += 1
+        permutation_u.append(float(u))
         if u >= U:
             ge += 1
-    return {"U": float(U), "p_one_sided": ge / tot, "n_permutations": tot,
-            "p_minimum_attainable": 1.0 / tot, "n_a": n, "n_b": m}
+        if abs(u - centre) >= observed_deviation - 1e-12:
+            extreme += 1
+    two_sided_floor = min(
+        sum(abs(candidate - centre) >= abs(value - centre) - 1e-12
+            for candidate in permutation_u) / tot
+        for value in permutation_u
+    )
+    return {
+        "U": float(U),
+        "p_one_sided": ge / tot,
+        "p_two_sided": min(1.0, extreme / tot),
+        "n_permutations": tot,
+        # Historical alias is the one-sided floor.
+        "p_minimum_attainable": 1.0 / tot,
+        "p_minimum_attainable_one_sided": 1.0 / tot,
+        "p_minimum_attainable_two_sided": two_sided_floor,
+        "n_a": n,
+        "n_b": m,
+    }
 
 
 def residualise(y, x):
@@ -187,11 +241,10 @@ def residualise(y, x):
     return y - X @ beta
 
 
-def trio_null(profile, tbd_idx, obs_idx, ndraw=NDRAW, seed=SEED):
-    """Empirical p for the mean within-window percentile of the observed trio against
-    random same-size trios drawn from the TBD."""
+def matched_set_null(profile, tbd_idx, obs_idx, ndraw=NDRAW, seed=SEED):
+    """Empirical p against random same-size residue sets drawn from the TBD."""
     rng = np.random.default_rng(seed)
-    ranks = np.array([100.0 * (profile < v).mean() for v in profile])
+    ranks = np.array([100.0 * (profile <= v).mean() for v in profile])
     obs = float(ranks[obs_idx].mean())
     draws = np.array([ranks[rng.choice(tbd_idx, len(obs_idx), replace=False)].mean()
                       for _ in range(ndraw)])
@@ -200,6 +253,13 @@ def trio_null(profile, tbd_idx, obs_idx, ndraw=NDRAW, seed=SEED):
             "null_sd": float(draws.std(ddof=1)), "n_draws": ndraw,
             "n_exceedances": n_ex, "p_empirical": (n_ex + 1) / (ndraw + 1),
             "z": float((obs - draws.mean()) / draws.std(ddof=1))}
+
+
+def trio_null(profile, tbd_idx, obs_idx, ndraw=NDRAW, seed=SEED):
+    """Compatibility wrapper for the three-residue annotation-set null."""
+    if len(obs_idx) != 3:
+        raise ValueError("trio_null requires exactly three observed residues")
+    return matched_set_null(profile, tbd_idx, obs_idx, ndraw=ndraw, seed=seed)
 
 
 def fetch_bfactor_cif(pdb, cache_only=False):
@@ -300,7 +360,10 @@ def main(argv=None):
         fluctuation_rows,
     )
     idx = {int(r): k for k, r in enumerate(resnums)}
-    drug_i = [idx[r] for r in DRUG]
+    definition_indices = {
+        name: [idx[r] for r in residues]
+        for name, residues in POCKET_DEFINITIONS.items()
+    }
     zn_i = [idx[r] for r in ZN]
     tbd_i = np.array([k for k, r in enumerate(resnums) if TBD[0] <= r <= TBD[1]])
 
@@ -352,11 +415,35 @@ def main(argv=None):
     # committed profiles must match the recomputed ones
     rho_check = L.spearman(anm_f, anm_comm)[0]
 
-    out = {"meta": {"drug_residues": DRUG, "zn_residues": ZN, "tbd_window": list(TBD),
-                    "n_tbd_residues": int(len(tbd_i)), "cutoff": CUTOFF,
-                    "n_modes_fluctuation": NMODES_FLUCT, "n_draws": NDRAW, "seed": SEED,
-                    "reference": REF,
-                    "spearman_recomputed_vs_committed_anm_profile": rho_check}}
+    out = {"meta": {
+        "primary_definition": "uniprot_ligand_annotations",
+        "primary_definition_scope": (
+            "pre-specified UniProt (S)-thalidomide ligand annotations; not an exhaustive "
+            "structural pocket definition"
+        ),
+        # Kept for readers of the previous schema; its scope is made explicit above.
+        "drug_residues": DRUG,
+        "pocket_definitions_common_window": {
+            name: list(residues) for name, residues in POCKET_DEFINITIONS.items()
+        },
+        "5fqd_4.5A_contact_shell_full": list(CONTACT_SHELL_FULL_5FQD),
+        "5fqd_contact_residues_missing_from_common_window":
+            list(CONTACT_SHELL_SENSOR_LOOP_MISSING),
+        "missing_contact_reason": (
+            "residues 350-353 lie in the sensor-loop segment omitted from the common "
+            "269-residue window because the genuine-apo open structures do not resolve it"
+        ),
+        "percentile_convention": PERCENTILE_CONVENTION,
+        "zn_residues": ZN,
+        "tbd_window": list(TBD),
+        "n_tbd_residues": int(len(tbd_i)),
+        "cutoff": CUTOFF,
+        "n_modes_fluctuation": NMODES_FLUCT,
+        "n_draws": NDRAW,
+        "seed": SEED,
+        "reference": REF,
+        "spearman_recomputed_vs_committed_anm_profile": rho_check,
+    }}
 
     # ------------------------------------------------ B-factor profile ---
     no_network = bool(args.no_network)
@@ -382,55 +469,107 @@ def main(argv=None):
                                    "comparable to a crystallographic B-factor",
         **bstats}
 
-    # ------------------------------------- three-way percentile comparison ---
-    print("percentile of the functional residue sets in each mobility profile:")
-    comparison = {}
-    for name, prof in profiles.items():
-        d_win = percentile_of(prof, drug_i)
-        z_win = percentile_of(prof, zn_i)
-        d_tbd = percentile_of(prof, drug_i, tbd_i)
-        z_tbd = percentile_of(prof, zn_i, tbd_i)
-        comparison[name] = {
-            "drug_percentile_window": d_win, "zn_percentile_window": z_win,
-            "drug_percentile_within_tbd": d_tbd, "zn_percentile_within_tbd": z_tbd,
-            "difference_window": d_win - z_win,
-            "drug_values": [float(prof[k]) for k in drug_i],
-            "zn_values": [float(prof[k]) for k in zn_i],
-            "mannwhitney": mannwhitney_one_sided(prof[drug_i], prof[zn_i]),
-            "trio_null_tbd_matched": trio_null(prof, tbd_i, drug_i),
-        }
-        c = comparison[name]
-        print(f"  {name:22s} drug {d_win:5.1f} vs Zn {z_win:5.1f} (window) | "
-              f"within-TBD {d_tbd:5.1f} vs {z_tbd:5.1f} | "
-              f"trio-null p = {c['trio_null_tbd_matched']['p_empirical']:.4f} | "
-              f"MW p = {c['mannwhitney']['p_one_sided']:.3f}")
+    # ------------------------------- definition-specific percentile comparison ---
+    print("weak empirical percentile of each residue definition in each mobility profile:")
+    comparison_by_definition = {}
+    for definition_name, selected_i in definition_indices.items():
+        selected_residues = list(POCKET_DEFINITIONS[definition_name])
+        definition_comparison = {}
+        print(f"  [{definition_name}] residues={selected_residues}")
+        for profile_name, prof in profiles.items():
+            d_win = percentile_of(prof, selected_i)
+            z_win = percentile_of(prof, zn_i)
+            d_tbd = percentile_of(prof, selected_i, tbd_i)
+            z_tbd = percentile_of(prof, zn_i, tbd_i)
+            matched_null = matched_set_null(prof, tbd_i, selected_i)
+            result = {
+                "definition": definition_name,
+                "residues": selected_residues,
+                "group_percentile_window": d_win,
+                "zn_percentile_window": z_win,
+                "group_percentile_within_tbd": d_tbd,
+                "zn_percentile_within_tbd": z_tbd,
+                "difference_window": d_win - z_win,
+                "group_values": [float(prof[k]) for k in selected_i],
+                "zn_values": [float(prof[k]) for k in zn_i],
+                "mannwhitney": mannwhitney_one_sided(prof[selected_i], prof[zn_i]),
+                "matched_set_null_tbd": matched_null,
+            }
+            if definition_name == "uniprot_ligand_annotations":
+                # Legacy field names remain aliases for the explicitly scoped trio.
+                result.update({
+                    "drug_percentile_window": d_win,
+                    "drug_percentile_within_tbd": d_tbd,
+                    "drug_values": result["group_values"],
+                    "trio_null_tbd_matched": matched_null,
+                })
+            definition_comparison[profile_name] = result
+            print(
+                f"    {profile_name:22s} group {d_win:5.1f} vs Zn {z_win:5.1f} "
+                f"(window) | within-TBD {d_tbd:5.1f} vs {z_tbd:5.1f} | "
+                f"set-null p = {matched_null['p_empirical']:.4f} | "
+                f"MW p2 = {result['mannwhitney']['p_two_sided']:.3f}"
+            )
+        comparison_by_definition[definition_name] = definition_comparison
+    comparison = comparison_by_definition["uniprot_ligand_annotations"]
+    out["definition_comparison"] = comparison_by_definition
+    # Backwards-compatible alias: this is the UniProt annotation trio only.
     out["three_way_comparison"] = comparison
 
     # --------------------------------------------- contact-number confound ---
-    conf = {}
-    for name, prof in profiles.items():
-        rho, p, n = L.spearman(contact, prof)
-        res = residualise(prof, contact)
-        conf[name] = {
-            "spearman_contact_vs_profile": {"rho": rho, "p": p, "n": n},
-            "drug_percentile_after_contact_residualisation": percentile_of(res, drug_i),
-            "zn_percentile_after_contact_residualisation": percentile_of(res, zn_i),
-            "trio_null_after_contact_residualisation":
-                trio_null(res, tbd_i, drug_i)}
-        if bprof is not None and name != "experimental_bfactor":
-            resb = residualise(prof, np.nan_to_num(bprof, nan=float(np.nanmean(bprof))))
-            conf[name]["drug_percentile_after_bfactor_residualisation"] = \
-                percentile_of(resb, drug_i)
-            conf[name]["zn_percentile_after_bfactor_residualisation"] = \
-                percentile_of(resb, zn_i)
-            conf[name]["trio_null_after_bfactor_residualisation"] = \
-                trio_null(resb, tbd_i, drug_i)
+    conf_by_definition = {}
+    for definition_name, selected_i in definition_indices.items():
+        definition_conf = {}
+        for profile_name, prof in profiles.items():
+            rho, p, n = L.spearman(contact, prof)
+            res = residualise(prof, contact)
+            contact_null = matched_set_null(res, tbd_i, selected_i)
+            result = {
+                "definition": definition_name,
+                "residues": list(POCKET_DEFINITIONS[definition_name]),
+                "spearman_contact_vs_profile": {"rho": rho, "p": p, "n": n},
+                "group_percentile_after_contact_residualisation":
+                    percentile_of(res, selected_i),
+                "zn_percentile_after_contact_residualisation": percentile_of(res, zn_i),
+                "matched_set_null_after_contact_residualisation": contact_null,
+            }
+            if bprof is not None and profile_name != "experimental_bfactor":
+                resb = residualise(
+                    prof,
+                    np.nan_to_num(bprof, nan=float(np.nanmean(bprof))),
+                )
+                bfactor_null = matched_set_null(resb, tbd_i, selected_i)
+                result.update({
+                    "group_percentile_after_bfactor_residualisation":
+                        percentile_of(resb, selected_i),
+                    "zn_percentile_after_bfactor_residualisation":
+                        percentile_of(resb, zn_i),
+                    "matched_set_null_after_bfactor_residualisation": bfactor_null,
+                })
+            if definition_name == "uniprot_ligand_annotations":
+                result.update({
+                    "drug_percentile_after_contact_residualisation":
+                        result["group_percentile_after_contact_residualisation"],
+                    "trio_null_after_contact_residualisation": contact_null,
+                })
+                if "group_percentile_after_bfactor_residualisation" in result:
+                    result.update({
+                        "drug_percentile_after_bfactor_residualisation":
+                            result["group_percentile_after_bfactor_residualisation"],
+                        "trio_null_after_bfactor_residualisation":
+                            result["matched_set_null_after_bfactor_residualisation"],
+                    })
+            definition_conf[profile_name] = result
+        conf_by_definition[definition_name] = definition_conf
+    conf = conf_by_definition["uniprot_ligand_annotations"]
+    out["confound_control_by_definition"] = conf_by_definition
+    # Backwards-compatible alias: UniProt annotation trio only.
     out["confound_control"] = conf
     print("contact-number confound:")
     for name, c in conf.items():
         s = c["spearman_contact_vs_profile"]
         print(f"  {name:22s} rho(contact, mobility) = {s['rho']:+.3f} "
-              f"(p = {s['p']:.1e}); after residualisation drug "
+              f"(p = {s['p']:.1e}); after residualisation annotations "
               f"{c['drug_percentile_after_contact_residualisation']:.1f} vs Zn "
               f"{c['zn_percentile_after_contact_residualisation']:.1f}")
 
@@ -468,38 +607,54 @@ def main(argv=None):
         "smallest_p": ps[0],
         "smallest_p_survives_bonferroni": bool(ps[0] < 0.05 / m),
         "benjamini_hochberg_adjusted_smallest": float(min(bh)),
-        "note": "The three trio-null tests are three measures of ONE hypothesis, not "
-                "three hypotheses; they are reported together rather than corrected "
+        "note": "The three trio-null tests are three measures of the pre-specified "
+                "UniProt annotation-trio hypothesis, not three hypotheses; they are "
+                "reported together rather than corrected "
                 "against each other, and the B-factor test is a pre-specified negative "
                 "control rather than a competing test. The Bonferroni figure is given "
                 "so a reader can apply the strictest possible correction.",
     }
 
     # --------------------------------------------------- effect sizes ---
-    eff = {}
-    for name, prof in profiles.items():
-        a, b = prof[drug_i], prof[zn_i]
-        sp = np.sqrt(((len(a) - 1) * a.var(ddof=1) + (len(b) - 1) * b.var(ddof=1)) /
-                     (len(a) + len(b) - 2))
-        d = float((a.mean() - b.mean()) / sp) if sp > 0 else float("nan")
-        # Cliff's delta (rank effect size), and its full range at n=3 vs 4
-        cd = float(np.mean([np.sign(x - y) for x in a for y in b]))
-        # bootstrap CI on the percentile difference
-        rng = np.random.default_rng(SEED)
-        boot = []
-        ranks = np.array([100.0 * (prof < v).mean() for v in prof])
-        for _ in range(10000):
-            ia = rng.choice(drug_i, len(drug_i), replace=True)
-            ib = rng.choice(zn_i, len(zn_i), replace=True)
-            boot.append(ranks[ia].mean() - ranks[ib].mean())
-        boot = np.array(boot)
-        eff[name] = {"cohens_d": d, "cliffs_delta": cd,
-                     "percentile_difference": float(ranks[drug_i].mean() -
-                                                    ranks[zn_i].mean()),
-                     "percentile_difference_ci95": [float(np.percentile(boot, 2.5)),
-                                                    float(np.percentile(boot, 97.5))],
-                     "note": "n = 3 vs 4; intervals are wide by construction and are "
-                             "reported to convey exactly that"}
+    eff_by_definition = {}
+    for definition_name, selected_i in definition_indices.items():
+        definition_effects = {}
+        for profile_name, prof in profiles.items():
+            a, b = prof[selected_i], prof[zn_i]
+            sp = np.sqrt(
+                ((len(a) - 1) * a.var(ddof=1) + (len(b) - 1) * b.var(ddof=1))
+                / (len(a) + len(b) - 2)
+            )
+            d = float((a.mean() - b.mean()) / sp) if sp > 0 else float("nan")
+            cd = float(np.mean([np.sign(x - y) for x in a for y in b]))
+            rng = np.random.default_rng(SEED)
+            boot = []
+            ranks = np.array([100.0 * (prof <= v).mean() for v in prof])
+            for _ in range(10000):
+                ia = rng.choice(selected_i, len(selected_i), replace=True)
+                ib = rng.choice(zn_i, len(zn_i), replace=True)
+                boot.append(ranks[ia].mean() - ranks[ib].mean())
+            boot = np.array(boot)
+            definition_effects[profile_name] = {
+                "definition": definition_name,
+                "residues": list(POCKET_DEFINITIONS[definition_name]),
+                "cohens_d": d,
+                "cliffs_delta": cd,
+                "percentile_difference":
+                    float(ranks[selected_i].mean() - ranks[zn_i].mean()),
+                "percentile_difference_ci95": [
+                    float(np.percentile(boot, 2.5)),
+                    float(np.percentile(boot, 97.5)),
+                ],
+                "note": (
+                    f"n = {len(a)} vs {len(b)}; intervals are wide by construction "
+                    "and are reported to convey exactly that"
+                ),
+            }
+        eff_by_definition[definition_name] = definition_effects
+    eff = eff_by_definition["uniprot_ligand_annotations"]
+    out["effect_sizes_by_definition"] = eff_by_definition
+    # Backwards-compatible alias: UniProt annotation trio only.
     out["effect_sizes"] = eff
 
     # ------------------------------------------------- recommended wording ---
@@ -507,26 +662,56 @@ def main(argv=None):
     anm_p = comparison["anm_fluctuation"]["trio_null_tbd_matched"]["p_empirical"]
     b_p = (comparison["experimental_bfactor"]["trio_null_tbd_matched"]["p_empirical"]
            if bprof is not None else None)
+    shell = comparison_by_definition["5fqd_4.5A_contact_shell_common_window"]
+    core = comparison_by_definition["annotated_plus_W400_F402"]
     out["verdict"] = {
-        "primary_statistic": "ensemble PCA fluctuation percentile of the drug trio "
-                             "against a TBD-matched random-trio null",
+        "primary_statistic": "ensemble PCA fluctuation percentile of the three "
+                             "pre-specified UniProt ligand annotations against a "
+                             "TBD-matched random-trio null",
         "primary_p": pca_p,
         "secondary_p_anm": anm_p,
         "bfactor_null_result_p": b_p,
         "mannwhitney_p": comparison["pca_fluctuation"]["mannwhitney"]["p_one_sided"],
-        "supportable_claim": "The drug-binding loop carries more amplitude in the "
-                             "dominant collective coordinate than the structural zinc "
-                             "site, at a level unlikely under a domain-matched null.",
+        "mannwhitney_p_two_sided":
+            comparison["pca_fluctuation"]["mannwhitney"]["p_two_sided"],
+        "supportable_claim": "The three UniProt ligand annotations occupy unusually "
+                             "high PCA-fluctuation percentiles relative to TBD-matched "
+                             "random trios. Their mean exceeds the zinc annotations, but "
+                             "the discrete 3-vs-4 exact two-sided comparison gives "
+                             "p = 0.0571. Neither result may be generalized to the entire "
+                             "structural pocket.",
+        "definition_sensitivity": {
+            "annotated_plus_W400_F402": {
+                "anm_mannwhitney_p_two_sided":
+                    core["anm_fluctuation"]["mannwhitney"]["p_two_sided"],
+                "pca_mannwhitney_p_two_sided":
+                    core["pca_fluctuation"]["mannwhitney"]["p_two_sided"],
+                "anm_percentile_difference": core["anm_fluctuation"]["difference_window"],
+                "pca_percentile_difference": core["pca_fluctuation"]["difference_window"],
+            },
+            "5fqd_4.5A_contact_shell_common_window": {
+                "anm_mannwhitney_p_two_sided":
+                    shell["anm_fluctuation"]["mannwhitney"]["p_two_sided"],
+                "pca_mannwhitney_p_two_sided":
+                    shell["pca_fluctuation"]["mannwhitney"]["p_two_sided"],
+                "anm_percentile_difference": shell["anm_fluctuation"]["difference_window"],
+                "pca_percentile_difference": shell["pca_fluctuation"]["difference_window"],
+            },
+        },
         "not_supportable": ["that the loop is 'more disordered' (crystallographic "
                             "B-factors do not distinguish the two sites)",
-                            "any claim resting on the 3-vs-4 Mann-Whitney test, which "
-                            "cannot reach p < 0.05 at these sample sizes"],
+                            "any significance claim resting on the 3-vs-4 two-sided "
+                            "Mann-Whitney test, whose minimum attainable p is 0.0571",
+                            "that residues 378/380/386 exhaustively define the structural "
+                            "thalidomide pocket",
+                            "that the ANM profile distinguishes the seven-residue 5FQD "
+                            "contact shell from the zinc annotations"],
     }
 
     artifact_path = Path("data/drug_loop_statistics.json")
     if not verify:
         atomic_write_json(artifact_path, out)
-    print(f"\nprimary: PCA-fluctuation trio null p = {pca_p:.4f}; "
+    print(f"\nprimary annotation trio: PCA-fluctuation set-null p = {pca_p:.4f}; "
           f"ANM p = {anm_p:.4f}; "
           + (f"B-factor p = {b_p:.3f} (negative control)"
              if b_p is not None else "B-factor control skipped/unavailable"))
@@ -547,6 +732,18 @@ def main(argv=None):
             c["anm_fluctuation"]["trio_null_tbd_matched"]
         assert c["pca_fluctuation"]["trio_null_tbd_matched"]["p_empirical"] < 0.01, \
             c["pca_fluctuation"]["trio_null_tbd_matched"]
+        # (b2) pocket-definition sensitivity: ANM does not distinguish either
+        # structural definition from zinc; PCA remains strongest for the resolved
+        # seven-residue 5FQD contact shell.
+        assert list(POCKET_DEFINITIONS["5fqd_4.5A_contact_shell_common_window"]) == \
+            [377, 378, 379, 380, 386, 400, 402]
+        shell_c = comparison_by_definition["5fqd_4.5A_contact_shell_common_window"]
+        core_c = comparison_by_definition["annotated_plus_W400_F402"]
+        assert shell_c["anm_fluctuation"]["mannwhitney"]["p_two_sided"] > 0.4
+        assert shell_c["pca_fluctuation"]["mannwhitney"]["p_two_sided"] < 0.03
+        assert shell_c["pca_fluctuation"]["mannwhitney"]["p_two_sided"] > 0.02
+        assert core_c["anm_fluctuation"]["mannwhitney"]["p_two_sided"] > 0.9
+        assert 0.05 < core_c["pca_fluctuation"]["mannwhitney"]["p_two_sided"] < 0.07
         # (c) contact confound is strong and negative, and the result survives it
         s = conf["anm_fluctuation"]["spearman_contact_vs_profile"]
         assert s["rho"] < -0.7, s
@@ -565,7 +762,8 @@ def main(argv=None):
         b_msg = (f"B-factor p = {b_p:.3f} (pre-specified negative control)"
                  if b_p is not None else
                  "B-factor control skipped/unavailable")
-        print(f"verify OK: PCA trio-null p = {pca_p:.4f} (primary), ANM p = {anm_p:.4f}, "
+        print(f"verify OK: PCA annotation-trio null p = {pca_p:.4f} (primary), "
+              f"ANM p = {anm_p:.4f}, "
               f"{b_msg}; "
               f"Mann-Whitney p = {mw['p_one_sided']:.3f} against a floor of "
               f"{mw['p_minimum_attainable']:.4f}; contact-number rho = {s['rho']:+.2f} "

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build supplementary Fig S1 and its exact source-data and legend files."""
+"""Build Fig. S1 and its exact source-data file."""
 
 from __future__ import annotations
 
@@ -14,22 +14,36 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from figure_package_utils import save_figure_set, write_legend_docx
+from figure_package_utils import save_figure_set
+from figure_style import (
+    BLACK,
+    CLOSED,
+    DARK_GREY,
+    GENUINE_APO,
+    GREEN,
+    MAIN_WIDTH_IN,
+    MID_GREY,
+    apply_publication_style,
+    finish_axis,
+    panel_label,
+    sample_size_label,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUT = ROOT / "data" / "crbn_curation_log.csv"
 SOURCE_DATA = ROOT / "figures" / "source_data" / "FigS1_source_data.csv"
-LEGEND_DOCX = ROOT / "figures" / "FigS1_legend.docx"
 
 STATE_ORDER = ["drug-conditioned", "native-substrate", "genuine-apo"]
 STATE_COLORS = {
-    "drug-conditioned": "#D9792B",
-    "native-substrate": "#2A9D8F",
-    "genuine-apo": "#3B6EA8",
+    "drug-conditioned": CLOSED,
+    "native-substrate": GREEN,
+    "genuine-apo": GENUINE_APO,
 }
+STATE_HATCHES = {"drug-conditioned": "", "native-substrate": "//", "genuine-apo": ".."}
 METHOD_ORDER = ["cryo-EM", "X-ray"]
-METHOD_COLORS = ["#2A9D8F", "#3B6EA8"]
+METHOD_COLORS = [DARK_GREY, MID_GREY]
+METHOD_HATCHES = ["", "//"]
 RESOLUTION_BINS = np.arange(2.0, 4.01, 0.25)
 
 
@@ -80,53 +94,86 @@ def build_figure(rows: list[dict[str, str]]) -> None:
     state_counts = {state: len(values) for state, values in state_values.items()}
     methods = Counter(row["method"] for row in rows)
 
-    plt.rcParams.update(
-        {
-            "font.family": "sans-serif",
-            "font.size": 8.5,
-            "axes.labelsize": 9,
-            "xtick.labelsize": 8,
-            "ytick.labelsize": 8,
-            "axes.linewidth": 0.7,
-            "pdf.fonttype": 42,
-            "ps.fonttype": 42,
-            "svg.hashsalt": "crbn-FigS1",
-        }
-    )
-    fig, (axa, axb) = plt.subplots(1, 2, figsize=(7.2, 3.0))
+    apply_publication_style("FigS1")
+    fig, (axa, axb) = plt.subplots(1, 2, figsize=(MAIN_WIDTH_IN, 2.82), dpi=300)
+    fig.subplots_adjust(left=0.088, right=0.988, bottom=0.18, top=0.84, wspace=0.35)
 
-    axa.hist(
-        [state_values[state] for state in STATE_ORDER],
-        bins=RESOLUTION_BINS,
-        stacked=True,
-        color=[STATE_COLORS[state] for state in STATE_ORDER],
-        label=[f"{state} (n={state_counts[state]})" for state in STATE_ORDER],
+    centers = (RESOLUTION_BINS[:-1] + RESOLUTION_BINS[1:]) / 2
+    widths = np.diff(RESOLUTION_BINS)
+    bottom = np.zeros(len(centers), dtype=int)
+    for state in STATE_ORDER:
+        counts, edges = np.histogram(state_values[state], bins=RESOLUTION_BINS)
+        if not np.array_equal(edges, RESOLUTION_BINS):
+            raise RuntimeError("resolution histogram edges changed unexpectedly")
+        axa.bar(
+            centers,
+            counts,
+            width=widths,
+            bottom=bottom,
+            align="center",
+            color=STATE_COLORS[state],
+            edgecolor=BLACK,
+            linewidth=0.45,
+            hatch=STATE_HATCHES[state],
+            alpha=0.84,
+            label=f"{state} ({sample_size_label(state_counts[state])})",
+            zorder=2,
+        )
+        bottom += counts
+    if int(bottom.sum()) != 70:
+        raise RuntimeError(f"stacked resolution histogram contains {int(bottom.sum())} entries")
+    axa.set(
+        xlabel="Resolution (Å)",
+        ylabel="Curated conformers",
+        xlim=(1.98, 4.02),
+        ylim=(0, 19.2),
     )
-    axa.set_xlabel("resolution (Å)")
-    axa.set_ylabel("curated conformers")
-    axa.legend(frameon=False, fontsize=7.2)
-    axa.spines[["top", "right"]].set_visible(False)
+    legend_handles, legend_labels = axa.get_legend_handles_labels()
+    fig.legend(
+        legend_handles,
+        legend_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.50, 0.99),
+        ncol=3,
+        fontsize=8.0,
+        labelspacing=0.25,
+        handlelength=1.4,
+        handletextpad=0.45,
+        columnspacing=0.9,
+        frameon=False,
+    )
+    finish_axis(axa, grid="y")
+    axa.tick_params(which="both", top=False, right=False)
+    panel_label(axa, "a", x=-0.10, y=1.055)
 
     method_counts = [methods[method] for method in METHOD_ORDER]
-    axb.bar(METHOD_ORDER, method_counts, color=METHOD_COLORS, width=0.8)
+    method_bars = axb.bar(
+        METHOD_ORDER,
+        method_counts,
+        color=METHOD_COLORS,
+        edgecolor=BLACK,
+        linewidth=0.55,
+        width=0.68,
+        zorder=2,
+    )
+    for bar, hatch in zip(method_bars, METHOD_HATCHES):
+        bar.set_hatch(hatch)
     for index, count in enumerate(method_counts):
-        axb.text(index, count + 0.4, str(count), ha="center", fontsize=8.5)
-    axb.set_ylabel("curated conformers")
-    axb.spines[["top", "right"]].set_visible(False)
-
-    for axis, label in ((axa, "a"), (axb, "b")):
-        axis.text(
-            -0.15,
-            1.05,
-            f"({label})",
-            transform=axis.transAxes,
-            fontsize=10,
+        axb.text(
+            index,
+            count + 0.7,
+            str(count),
+            ha="center",
+            va="bottom",
+            fontsize=8.5,
             fontweight="bold",
-            va="top",
-            ha="right",
+            color=DARK_GREY,
         )
+    axb.set(ylabel="Curated conformers", ylim=(0, 45))
+    finish_axis(axb, grid="y")
+    axb.tick_params(which="both", top=False, right=False)
+    panel_label(axb, "b", x=-0.10, y=1.055)
 
-    fig.tight_layout()
     save_figure_set(fig, ROOT, "FigS1")
     plt.close(fig)
 
@@ -137,14 +184,6 @@ def main() -> None:
     methods = Counter(row["method"] for row in rows)
     write_source_data(rows)
     build_figure(rows)
-    write_legend_docx(
-        LEGEND_DOCX,
-        "Fig S1. Ensemble composition. (a) Resolution distribution of the curated "
-        "70-conformer ensemble, stacked by global state: 66 drug-conditioned, one "
-        "native-substrate-bound and three genuine-apo conformers. (b) Experimental "
-        "method composition: 42 cryo-electron microscopy (cryo-EM) and 28 X-ray "
-        "crystallography structures.",
-    )
     print(f"FigS1 built: states {dict(counts)}; methods {dict(methods)}")
 
 

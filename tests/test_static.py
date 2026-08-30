@@ -142,7 +142,7 @@ def test_primary_mode_workflow_does_not_require_render_inputs():
     assert 'label == "8CVP"' in source
 
 
-def test_main_figure_builders_prepare_output_directories():
+def test_main_figure_builders_use_root_relative_deterministic_exports():
     for name in (
         "build_fig1.py",
         "build_fig2.py",
@@ -151,19 +151,31 @@ def test_main_figure_builders_prepare_output_directories():
         "build_fig5_robustness.py",
     ):
         source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
-        assert "prepare_figure_dirs()" in source, name
+        assert 'ROOT = Path(__file__).resolve().parents[1]' in source, name
+        assert "save_figure_set" in source, name
 
 
 def test_fig1_uses_the_generated_window_sensitivity_key():
     source = (ROOT / "scripts" / "build_fig1.py").read_text(encoding="utf-8")
     assert "a_paper_rule" in source
     assert "a_primaryer_rule" not in source
+    assert "normalized_band = (raw_band - closed_mean) / (open_mean - closed_mean)" in source
 
 
 def test_fig4_declares_its_required_prepared_panel():
     source = (ROOT / "scripts" / "build_fig4.py").read_text(encoding="utf-8")
-    assert "require_prepared_panel" in source
-    assert "pymol -cq scripts/render_fig4_pocket.py" in source
+    assert "FROZEN_STRUCTURE_SHA256" in source
+    assert "_verify_structure_input()" in source
+
+
+def test_source_data_exporter_and_shared_style_are_public_code():
+    exporter = ROOT / "scripts" / "export_figure_source_data.py"
+    style = ROOT / "scripts" / "figure_style.py"
+    assert exporter.is_file()
+    assert style.is_file()
+    source = exporter.read_text(encoding="utf-8")
+    assert all(f"export_fig{index}()" in source for index in range(1, 6))
+    assert 'plt.style.use(["science", "no-latex"])' in style.read_text(encoding="utf-8")
 
 
 def test_ci_runs_python311_lint_compile_and_tests():

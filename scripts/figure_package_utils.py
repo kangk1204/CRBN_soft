@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small deterministic-output helpers for supplementary figure packages."""
+"""Small deterministic-output helpers for CRBN figure packages."""
 
 from __future__ import annotations
 
@@ -136,16 +136,18 @@ def save_figure_set(fig, root: Path, stem: str) -> tuple[Path, Path, Path]:
         png,
         dpi=300,
         bbox_inches="tight",
+        pad_inches=0.04,
         facecolor="white",
-        metadata={"Software": "CRBN supplementary figure builder"},
+        metadata={"Software": "CRBN figure builder v2"},
     )
     fig.savefig(
         pdf,
         bbox_inches="tight",
+        pad_inches=0.04,
         facecolor="white",
         metadata={
             "Title": stem,
-            "Creator": "CRBN supplementary figure builder",
+            "Creator": "CRBN figure builder v2",
             "CreationDate": None,
             "ModDate": None,
         },
@@ -153,6 +155,7 @@ def save_figure_set(fig, root: Path, stem: str) -> tuple[Path, Path, Path]:
     fig.savefig(
         svg,
         bbox_inches="tight",
+        pad_inches=0.04,
         facecolor="white",
         metadata={"Title": stem, "Date": None},
     )

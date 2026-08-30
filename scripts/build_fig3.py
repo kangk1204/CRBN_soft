@@ -1,121 +1,318 @@
 #!/usr/bin/env python3
-"""Build Fig 3 (rigid-body swing about the DDB1-binding helical-bundle hinge).
+"""Build Fig. 3 from the frozen GNM/ANM/PCA analysis artifacts.
 
-(a) GNM cross-correlation map from data/crbn_anm_modes.npz (all 20 GNM modes;
-    covariance = sum_k (1/lambda_k) v_k v_k^T, normalised to correlations). The eigenpairs
-    come from the artifact reproduce_modes.py regenerates, so rerunning that script updates
-    this figure. The figure previously read data/crbn_gnm_model.gnm.npz, a ProDy-pickled
-    file that no script in the repository writes; the two agree to ~1e-14 (eigenvalues
-    9.0e-15, correlation map 4.7e-14), which is why this needed a test rather than an eye.
-(b) Per-residue square fluctuation (each normalised to its own maximum) for the
-    intrinsic ANM and archive-derived PCA, from data/crbn_residue_fluctuations.csv.
-Domain colour code NTD #3b6ea5 / HB #4bab8c / TBD #e07b39 threaded across figures.
-Panel labels use the panel (a)/(b) convention.
+Panel (a) is the all-20-mode GNM cross-correlation matrix. Panel (b) pairs the
+ANM and ensemble-PCA residue fluctuation profiles without connecting across
+unresolved sequence gaps. The isolated residue-222 ANM spike is retained and
+shown on a broken y axis; it is never clipped or used as the normalization
+denominator.
 """
-from figure_package_utils import prepare_figure_dirs
 
-FIGURES, VECTOR, _ = prepare_figure_dirs()
+from __future__ import annotations
 
-import numpy as np
 import csv
+import json
+from pathlib import Path
+
 import matplotlib
+
 matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
+import numpy as np
+from figure_package_utils import save_figure_set
+from figure_style import (
+    ANM,
+    BLACK,
+    DARK_GREY,
+    HB,
+    LIGHT_GREY,
+    MAIN_WIDTH_IN,
+    NTD,
+    PCA,
+    TBD,
+    apply_publication_style,
+    finish_axis,
+    panel_label,
+)
+from matplotlib.patches import Patch, Rectangle
 
-NTD_C = "#3b6ea5"; HB_C = "#4bab8c"; TBD_C = "#e07b39"
-ANM_C = "#333333"; PCA_C = "#6b4fa0"
+ROOT = Path(__file__).resolve().parents[1]
+MODES_INPUT = ROOT / "data" / "crbn_anm_modes.npz"
+FLUCTUATION_INPUT = ROOT / "data" / "crbn_residue_fluctuations.csv"
+HINGE_INPUT = ROOT / "data" / "hinge_geometry.json"
 
-# domain boundaries (UniProt/author numbering): NTD 1-186, HB 187-317, TBD 318-426
-NTD_HB = 186.5; HB_TBD = 317.5
-# Shades residues 258-315 inclusive. The band must contain all three reported hinge
-# points (273, 289, 315); an earlier upper edge of 314 excluded 315, and the caption,
-# the body text and this constant disagreed three ways.
-HINGE = (257.5, 315.5)
+# UniProt/author numbering: NTD 1-186, HB 187-317, TBD 318-426.
+NTD_HB = 186.5
+HB_TBD = 317.5
 
-g = np.load("data/crbn_anm_modes.npz")
-vecs = np.asarray(g["gnm_eigvecs"]); vals = np.asarray(g["gnm_eigvals"])
-cov = (vecs / vals) @ vecs.T
-dsq = np.sqrt(np.diag(cov))
-cc = cov / np.outer(dsq, dsq)
 
-rows = list(csv.DictReader(open("data/crbn_residue_fluctuations.csv")))
-res = np.array([int(r["resnum"]) for r in rows])
-anm = np.array([float(r["anm_sqfluct"]) for r in rows])
-# Normalise to the profile with the chain-break artefacts removed, not to residue 222.
-# 222 is the global maximum and the same caption calls it an artefact, so dividing by it
-# compresses every real feature against a value the text asks the reader to discount.
-# "Near a break" means within two sequence positions of a gap edge, which is what it takes
-# to reach 222: the 198-220 gap leaves 221 as the immediate flank and 222 one step further,
-# and it is 222, not 221, that is under-contacted enough to spike. Excluded from the
-# denominator only -- every residue is still plotted, and 222 is annotated as the artefact.
-_edge = np.zeros(len(res), bool)
-for i in range(1, len(res)):
-    if res[i] - res[i - 1] > 1:
-        _edge[max(0, i - 2):i + 2] = True
-anm_ref = anm[~_edge].max()
-anm = anm / anm_ref
-axb_note = f"residue 222 = {anm[list(res).index(222)]:.1f}x the artefact-free maximum"
-pca = np.array([float(r["pca_sqfluct"]) for r in rows]); pca /= pca.max()
+def _load_axis_band() -> tuple[float, float, tuple[int, ...]]:
+    """Load the endpoint-derived screw-axis-proximal boundary band."""
+    payload = json.loads(HINGE_INPUT.read_text(encoding="utf-8"))
+    residues = tuple(int(value) for value in payload["axis_proximal_boundary_residues"])
+    if residues != (316, 317, 318, 319, 320):
+        raise ValueError(f"unexpected screw-axis-proximal boundary residues: {residues}")
+    if abs(float(payload["rotation_angle_deg"]) - 82.457) > 0.01:
+        raise ValueError("axis geometry does not match the frozen endpoint transform")
+    return residues[0] - 0.5, residues[-1] + 0.5, residues
 
-plt.rcParams.update({
-    "font.family": "sans-serif", "font.size": 11, "axes.labelsize": 12,
-    "axes.titlesize": 12, "axes.linewidth": 0.8, "savefig.dpi": 300,
-})
 
-fig, (axa, axb) = plt.subplots(1, 2, figsize=(13.0, 5.2), gridspec_kw={"width_ratios": [1.0, 1.25]})
+def _load_data() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    with np.load(MODES_INPUT, allow_pickle=False) as modes:
+        eigenvectors = np.asarray(modes["gnm_eigvecs"], dtype=float)
+        eigenvalues = np.asarray(modes["gnm_eigvals"], dtype=float)
 
-# panel a: GNM cross-correlation
-# the analysis window is non-contiguous, so the map is drawn in matrix-index space and the
-# ticks are labelled with the true residue numbers (a residue-number extent would stretch
-# 269 matrix rows linearly over 348 residue-number units)
-im = axa.imshow(cc, origin="lower", cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
-for b in (NTD_HB, HB_TBD):
-    i = np.searchsorted(res, b) - 0.5
-    axa.axhline(i, color="k", lw=0.5, ls=":"); axa.axvline(i, color="k", lw=0.5, ls=":")
-i_ntd = np.searchsorted(res, 130); i_tbd = np.searchsorted(res, 375)
-axa.text(i_ntd, i_ntd, "NTD", ha="center", va="center", fontsize=12)
-axa.text(i_tbd, i_tbd, "TBD", ha="center", va="center", fontsize=12)
-tick_idx = np.searchsorted(res, [100, 150, 200, 250, 300, 350, 400])
-axa.set_xticks(tick_idx); axa.set_xticklabels(res[tick_idx])
-axa.set_yticks(tick_idx); axa.set_yticklabels(res[tick_idx])
-axa.set_xlabel("residue"); axa.set_ylabel("residue")
-# panel descriptions live in the figure legend (figure style), not in the figure
-cb = fig.colorbar(im, ax=axa, fraction=0.046, pad=0.04); cb.set_label("GNM cross-correlation")
-axa.text(-0.16, 1.04, "(a)", transform=axa.transAxes, fontsize=13, fontweight="bold", va="top", ha="right")
+    with FLUCTUATION_INPUT.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    residues = np.asarray([int(row["resnum"]) for row in rows], dtype=int)
+    anm_raw = np.asarray([float(row["anm_sqfluct"]) for row in rows], dtype=float)
+    pca_raw = np.asarray([float(row["pca_sqfluct"]) for row in rows], dtype=float)
 
-# panel b: per-residue fluctuation with domain background
-axb.axvspan(res[0], NTD_HB, color=NTD_C, alpha=0.10)
-axb.axvspan(NTD_HB, HB_TBD, color=HB_C, alpha=0.10)
-axb.axvspan(HB_TBD, res[-1], color=TBD_C, alpha=0.10)
-axb.axvspan(*HINGE, color="#888888", alpha=0.18)
-# the analysis window is non-contiguous; break the traces at sequence gaps so the plot
-# does not interpolate across unresolved segments
-def _break_at_gaps(x, y):
-    xs, ys = [x[0]], [y[0]]
-    for i in range(1, len(x)):
-        if x[i] - x[i - 1] > 1:
-            xs.append(x[i - 1] + 0.5); ys.append(np.nan)
-        xs.append(x[i]); ys.append(y[i])
-    return np.array(xs, float), np.array(ys, float)
+    if eigenvectors.shape != (len(residues), 20):
+        raise ValueError(
+            "GNM eigenvectors must contain 20 modes over the same residue window: "
+            f"{eigenvectors.shape} versus {len(residues)} residues"
+        )
+    if eigenvalues.shape != (20,) or np.any(eigenvalues <= 0):
+        raise ValueError(f"expected 20 positive GNM eigenvalues, found {eigenvalues.shape}")
+    if len(np.unique(residues)) != len(residues) or np.any(np.diff(residues) <= 0):
+        raise ValueError("residue identifiers must be unique and strictly increasing")
+    if not all(np.isfinite(array).all() for array in (eigenvectors, eigenvalues, anm_raw, pca_raw)):
+        raise ValueError("Fig. 3 input contains non-finite values")
 
-rx, ay = _break_at_gaps(res, anm)
-_, py = _break_at_gaps(res, pca)
-axb.plot(rx, ay, color=ANM_C, lw=1.4, label="ANM (intrinsic)")
-axb.plot(rx, py, color=PCA_C, lw=1.4, label="PCA (experimental)")
-axb.text(130, 0.62, "NTD", ha="center", color=NTD_C, fontweight="bold", fontsize=12)
-axb.text((NTD_HB + HB_TBD) / 2, 0.93, "HB", ha="center", color=HB_C, fontweight="bold", fontsize=12)
-axb.text((HINGE[0] + HINGE[1]) / 2, 0.86, "hinge", ha="center", color="#666666", fontsize=11)
-axb.text((HB_TBD + res[-1]) / 2, 0.93, "TBD", ha="center", color=TBD_C, fontweight="bold", fontsize=12)
-axb.set_xlabel("residue"); axb.set_ylabel("normalized fluctuation")
-axb.set_xlim(res[0], res[-1]); axb.set_ylim(0, max(1.05, float(np.nanmax(ay)) * 1.05))
-axb.legend(frameon=False, fontsize=10, loc="upper left", bbox_to_anchor=(0.0, 0.88))
-pass  # panel title moved to legend
-axb.spines[["top", "right"]].set_visible(False)
-axb.text(-0.10, 1.04, "(b)", transform=axb.transAxes, fontsize=13, fontweight="bold", va="top", ha="right")
+    covariance = (eigenvectors / eigenvalues) @ eigenvectors.T
+    diagonal = np.sqrt(np.diag(covariance))
+    correlation = covariance / np.outer(diagonal, diagonal)
+    if not np.allclose(correlation, correlation.T, rtol=0.0, atol=1e-12):
+        raise ValueError("recomputed GNM correlation matrix is not symmetric")
+    if not np.allclose(np.diag(correlation), 1.0, rtol=0.0, atol=1e-12):
+        raise ValueError("recomputed GNM correlation matrix has a non-unit diagonal")
 
-fig.tight_layout()
-fig.savefig(FIGURES / "Fig3.png", dpi=300, bbox_inches="tight")
-fig.savefig(VECTOR / "Fig3.pdf", bbox_inches="tight")
-fig.savefig(VECTOR / "Fig3.svg", bbox_inches="tight")
-print(f"Fig3 built: cc range [{cc.min():.2f}, {cc.max():.2f}]; "
-      f"ANM/PCA fluct n={len(res)} residues {res[0]}-{res[-1]}")
+    # Exclude two represented residues on either side of each sequence gap from
+    # the ANM normalization denominator only. Every observed residue remains
+    # plotted, including the documented gap-flank spike at residue 222.
+    gap_flank = np.zeros(len(residues), dtype=bool)
+    for index in np.flatnonzero(np.diff(residues) > 1) + 1:
+        gap_flank[max(0, index - 2) : index + 2] = True
+    anm_reference = float(anm_raw[~gap_flank].max())
+    anm = anm_raw / anm_reference
+    pca = pca_raw / float(pca_raw.max())
+    return residues, correlation, anm, pca
+
+
+def _break_at_gaps(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Insert NaNs so lines never interpolate across unresolved sequence gaps."""
+    x_out: list[float] = [float(x[0])]
+    y_out: list[float] = [float(y[0])]
+    for index in range(1, len(x)):
+        if x[index] - x[index - 1] > 1:
+            x_out.append(float(x[index - 1]) + 0.5)
+            y_out.append(np.nan)
+        x_out.append(float(x[index]))
+        y_out.append(float(y[index]))
+    return np.asarray(x_out), np.asarray(y_out)
+
+
+def _domain_strip(axis, residues: np.ndarray) -> None:
+    """Add a compact domain key aligned to matrix-index space."""
+    strip = axis.inset_axes([0.0, 1.012, 1.0, 0.052], transform=axis.transAxes)
+    strip.set_xlim(-0.5, len(residues) - 0.5)
+    strip.set_ylim(0, 1)
+    domains = [
+        (residues <= NTD_HB, NTD, "NTD"),
+        ((residues > NTD_HB) & (residues <= HB_TBD), HB, "HB"),
+        (residues > HB_TBD, TBD, "TBD"),
+    ]
+    for mask, color, label in domains:
+        indices = np.flatnonzero(mask)
+        strip.add_patch(
+            Rectangle(
+                (indices[0] - 0.5, 0),
+                indices[-1] - indices[0] + 1,
+                1,
+                facecolor=color,
+                edgecolor="none",
+            )
+        )
+        strip.text(
+            float(indices.mean()),
+            0.5,
+            label,
+            color="white",
+            fontsize=8.0,
+            fontweight="bold",
+            ha="center",
+            va="center",
+        )
+    strip.set_axis_off()
+
+
+def _shade_domains(
+    axis, first_residue: int, last_residue: int, axis_band: tuple[float, float]
+) -> None:
+    axis.axvspan(first_residue, NTD_HB, color=NTD, alpha=0.085, linewidth=0)
+    axis.axvspan(NTD_HB, HB_TBD, color=HB, alpha=0.085, linewidth=0)
+    axis.axvspan(HB_TBD, last_residue, color=TBD, alpha=0.085, linewidth=0)
+    axis.axvspan(*axis_band, color=DARK_GREY, alpha=0.10, hatch="////", linewidth=0)
+
+
+def _axis_break_marks(upper, lower) -> None:
+    kwargs = {"color": BLACK, "clip_on": False, "linewidth": 0.75}
+    d = 0.012
+    upper.plot((-d, +d), (-d, +d), transform=upper.transAxes, **kwargs)
+    upper.plot((1 - d, 1 + d), (-d, +d), transform=upper.transAxes, **kwargs)
+    lower.plot((-d, +d), (1 - d, 1 + d), transform=lower.transAxes, **kwargs)
+    lower.plot((1 - d, 1 + d), (1 - d, 1 + d), transform=lower.transAxes, **kwargs)
+
+
+def main() -> None:
+    residues, correlation, anm, pca = _load_data()
+    axis_start, axis_end, axis_residues = _load_axis_band()
+    axis_band = (axis_start, axis_end)
+    apply_publication_style("Fig3")
+
+    # Tight bounding includes the external panel labels and colour bar; a
+    # 0.10-in canvas allowance keeps the exported media box at about 168 mm.
+    figure = plt.figure(figsize=(MAIN_WIDTH_IN - 0.10, 3.45))
+    outer = figure.add_gridspec(
+        1,
+        2,
+        width_ratios=(1.00, 1.22),
+        left=0.075,
+        right=0.985,
+        bottom=0.15,
+        top=0.90,
+        wspace=0.34,
+    )
+
+    # Panel a: all-mode GNM cross-correlation in matrix-index space. True
+    # residue numbers remain the tick labels because the sequence is gapped.
+    ax_corr = figure.add_subplot(outer[0, 0])
+    image = ax_corr.imshow(
+        correlation,
+        origin="lower",
+        cmap="RdBu_r",
+        vmin=-1,
+        vmax=1,
+        interpolation="nearest",
+        aspect="equal",
+        rasterized=True,
+    )
+    for boundary in (NTD_HB, HB_TBD):
+        boundary_index = np.searchsorted(residues, boundary) - 0.5
+        ax_corr.axhline(boundary_index, color=BLACK, linewidth=0.65, linestyle=":")
+        ax_corr.axvline(boundary_index, color=BLACK, linewidth=0.65, linestyle=":")
+    tick_residues = np.asarray([100, 150, 200, 250, 300, 350, 400])
+    tick_indices = np.searchsorted(residues, tick_residues)
+    tick_indices = np.clip(tick_indices, 0, len(residues) - 1)
+    ax_corr.set_xticks(tick_indices, labels=residues[tick_indices])
+    ax_corr.set_yticks(tick_indices, labels=residues[tick_indices])
+    ax_corr.set_xlabel("Residue")
+    ax_corr.set_ylabel("Residue")
+    ax_corr.tick_params(which="both", top=False, right=False)
+    _domain_strip(ax_corr, residues)
+    panel_label(ax_corr, "a", x=-0.16, y=1.13)
+    colorbar = figure.colorbar(image, ax=ax_corr, fraction=0.047, pad=0.035)
+    colorbar.set_ticks([-1, -0.5, 0, 0.5, 1])
+    colorbar.ax.set_title("GNM r", fontsize=8.0, fontweight="bold", pad=3)
+    colorbar.outline.set_linewidth(0.65)
+
+    # Panel b: a small upper segment keeps the 1.93x residue-222 artefact
+    # visible while preserving readable detail in the biologically relevant
+    # 0-1 range shared by the two normalized profiles.
+    mobility_grid = outer[0, 1].subgridspec(2, 1, height_ratios=(0.42, 2.30), hspace=0.055)
+    ax_high = figure.add_subplot(mobility_grid[0, 0])
+    ax_low = figure.add_subplot(mobility_grid[1, 0], sharex=ax_high)
+    x_plot, anm_plot = _break_at_gaps(residues, anm)
+    _, pca_plot = _break_at_gaps(residues, pca)
+    for axis in (ax_high, ax_low):
+        _shade_domains(axis, int(residues[0]), int(residues[-1]), axis_band)
+        axis.plot(x_plot, anm_plot, color=ANM, linewidth=1.35, label="ANM (intrinsic)")
+        axis.plot(
+            x_plot,
+            pca_plot,
+            color=PCA,
+            linewidth=1.35,
+            linestyle=(0, (4.2, 2.0)),
+            label="PCA (ensemble)",
+        )
+        axis.set_xlim(residues[0], residues[-1])
+        finish_axis(axis, grid="y")
+        axis.tick_params(which="both", top=False, right=False)
+
+    ax_high.set_ylim(1.68, 2.02)
+    ax_high.set_yticks([1.75, 2.00])
+    ax_high.spines["bottom"].set_visible(False)
+    ax_high.tick_params(axis="x", bottom=False, labelbottom=False)
+    ax_low.set_ylim(0, 1.05)
+    ax_low.set_yticks([0, 0.25, 0.50, 0.75, 1.00])
+    ax_low.spines["top"].set_visible(False)
+    ax_low.set_xlabel("Residue")
+    ax_low.set_ylabel("Normalized square fluctuation")
+    _axis_break_marks(ax_high, ax_low)
+
+    residue_222_index = int(np.flatnonzero(residues == 222)[0])
+    ax_high.annotate(
+        f"222  ({anm[residue_222_index]:.2f}×)",
+        xy=(222, anm[residue_222_index]),
+        xytext=(238, 1.88),
+        arrowprops={"arrowstyle": "-", "color": DARK_GREY, "linewidth": 0.7},
+        color=DARK_GREY,
+        fontsize=8.0,
+        ha="left",
+        va="center",
+    )
+    pca_peak_index = int(np.argmax(pca))
+    ax_low.annotate(
+        f"PCA peak {residues[pca_peak_index]}",
+        xy=(residues[pca_peak_index], pca[pca_peak_index]),
+        xytext=(358, 0.83),
+        arrowprops={"arrowstyle": "-", "color": PCA, "linewidth": 0.7},
+        color=PCA,
+        fontsize=8.0,
+        ha="right",
+        va="center",
+    )
+    ax_low.text(130, 0.94, "NTD", color=NTD, fontweight="bold", ha="center", va="top")
+    ax_low.text(242, 0.94, "HB", color=HB, fontweight="bold", ha="center", va="top")
+    ax_low.text(318, 0.83, "axis", color=DARK_GREY, ha="center", va="top")
+    ax_low.text(374, 0.94, "TBD", color=TBD, fontweight="bold", ha="center", va="top")
+    legend_handles = [
+        plt.Line2D([], [], color=ANM, linewidth=1.5, label="ANM (intrinsic)"),
+        plt.Line2D(
+            [], [], color=PCA, linewidth=1.5, linestyle=(0, (4.2, 2.0)), label="PCA (ensemble)"
+        ),
+        Patch(
+            facecolor=LIGHT_GREY,
+            edgecolor=DARK_GREY,
+            hatch="////",
+            label=f"screw-axis proximity {axis_residues[0]}-{axis_residues[-1]}",
+        ),
+    ]
+    ax_low.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(0.0, 0.77),
+        borderaxespad=0,
+        labelspacing=0.35,
+    )
+    panel_label(ax_high, "b", x=-0.13, y=1.11)
+
+    save_figure_set(figure, ROOT, "Fig3")
+    plt.close(figure)
+
+    ntd = residues <= NTD_HB
+    tbd = residues > HB_TBD
+    mean_ntd_tbd = float(correlation[np.ix_(ntd, tbd)].mean())
+    print(
+        "Fig3 built: "
+        f"GNM range [{correlation.min():.3f}, {correlation.max():.3f}], "
+        f"mean NTD-TBD correlation {mean_ntd_tbd:.3f}, "
+        f"residue-222 ANM {anm[residue_222_index]:.3f}x, "
+        f"PCA peak residue {residues[pca_peak_index]}, n={len(residues)}"
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Hinge stability across structures/cutoffs and near-boundary depositions.
 
-Two robustness checks for the structure-based interpretation, kept modest:
+Two robustness checks for the structure-based mechanistic interpretation:
 
-  1. HINGE STABILITY. The GNM slow-mode hinge (sign change of the slowest GNM
-     eigenvector) localises the pivot of the open<->closed motion. We recompute
-     it (a) on several open structures and (b) over GNM cutoffs 7-12 A, and
-     report the residues that are hinge points in a majority of settings, so the
-     reported hinge is not an artifact of one structure/cutoff.
+  1. GNM NODAL STABILITY. Sign changes of the slowest GNM eigenvector identify
+     scalar correlation nodes, not a three-dimensional rotation axis. We
+     recompute them (a) on several open structures and (b) over GNM cutoffs
+     7-12 A. Only consecutive author residue numbers are eligible: array
+     neighbours separated by an unresolved sequence gap are not covalent
+     neighbours and cannot define a residue-level sign-change site.
 
   2. INTERMEDIATE PROJECTION. We project every ensemble member onto experimental
      PC1 and report where selected recent depositions (9NFQ, 9NFR, 9Y7D) and other
@@ -57,11 +58,32 @@ def gnm_slow_mode(coords, cutoff):
     return v[:, nz[0]]                  # slowest nonzero GNM mode
 
 def hinge_residues(mode, resnums):
-    """residues at a sign change of the slow GNM mode (the hinge points)."""
+    """Consecutive residues at a sign change of the slow GNM mode."""
+    mode = np.asarray(mode)
+    resnums = np.asarray(resnums)
+    if mode.ndim != 1 or resnums.ndim != 1 or mode.shape != resnums.shape:
+        raise ValueError("mode and residue numbers must be matching one-dimensional arrays")
+    if not np.isfinite(mode).all() or np.any(np.diff(resnums) <= 0):
+        raise ValueError("mode must be finite and residue numbers strictly increasing")
     s = np.sign(mode); out = []
     for i in range(len(s)-1):
-        if s[i] != 0 and s[i+1] != 0 and s[i] != s[i+1]:
+        if (resnums[i + 1] == resnums[i] + 1 and s[i] != 0 and s[i+1] != 0
+                and s[i] != s[i+1]):
             out.append(int(resnums[i+1]))
+    return out
+
+
+def gap_crossing_sign_changes(mode, resnums):
+    """Diagnostic sign changes that cross an unresolved author-number gap."""
+    mode = np.asarray(mode)
+    resnums = np.asarray(resnums)
+    if mode.ndim != 1 or resnums.ndim != 1 or mode.shape != resnums.shape:
+        raise ValueError("mode and residue numbers must be matching one-dimensional arrays")
+    s = np.sign(mode); out = []
+    for i in range(len(s) - 1):
+        if (resnums[i + 1] > resnums[i] + 1 and s[i] != 0 and s[i + 1] != 0
+                and s[i] != s[i + 1]):
+            out.append({"left": int(resnums[i]), "right": int(resnums[i + 1])})
     return out
 
 def main():
@@ -75,13 +97,15 @@ def main():
 
     # 1. hinge stability across open structures x cutoffs
     from collections import Counter
-    votes = Counter(); settings = 0
+    votes = Counter(); gap_votes = Counter(); settings = 0
     for lab in OPEN:
         coords = confs[labels.index(lab)]
         for co in GNM_CUTOFFS:
             m = gnm_slow_mode(coords, co)
             for r in hinge_residues(m, resnums):
                 votes[r] += 1
+            for gap in gap_crossing_sign_changes(m, resnums):
+                gap_votes[(gap["left"], gap["right"])] += 1
             settings += 1
     # hinge points appearing in a majority of settings, grouped into contiguous bands
     majority = sorted(r for r, c in votes.items() if c >= settings/2)
@@ -110,8 +134,16 @@ def main():
     near = sorted(((coord(proj[l]), l) for l in labels if l not in OPEN
                    and 0.12 < coord(proj[l]) < 0.7), reverse=True)
 
-    out = {"hinge": {"bands": bands, "settings": settings,
-                     "top_votes": votes.most_common(10)},
+    out = {"gnm_nodal_sites": {"bands": bands, "settings": settings,
+                     "top_votes": votes.most_common(10),
+                     "gap_crossing_votes_excluded": [
+                         {"left": left, "right": right, "votes": count}
+                         for (left, right), count in gap_votes.most_common()
+                     ],
+                     "interpretation": (
+                         "Scalar GNM sign-change nodes; not a kinematic rotation axis. "
+                         "See data/hinge_geometry.json for the screw-axis analysis."
+                     )},
            "pc1_open_mean": open_mean, "pc1_closed_mean": closed_mean,
            "intermediates": intermediates,
            "near_boundary": [{"pdb": l, "coord": round(c, 3)} for c, l in near]}
@@ -119,7 +151,8 @@ def main():
         with open("data/hinge_intermediate.json", "w", encoding="utf-8") as _fh:
             json.dump(out, _fh, indent=1)
 
-    print(f"hinge bands (majority of {settings} settings): {bands}")
+    print(f"GNM nodal bands (majority of {settings} settings): {bands}")
+    print(f"excluded gap-crossing sign changes: {gap_votes.most_common()}")
     print(f"PC1 open mean {open_mean:.2f}, closed mean {closed_mean:.2f}")
     for p, d in intermediates.items():
         print(f"  {p}: PC1 {d['pc1']:.3f}, open->closed coord {d['open_closed_coord']:.2f}")
@@ -127,11 +160,11 @@ def main():
           f"{[(d['pdb'], d['coord']) for d in out['near_boundary'][:6]]}")
 
     if verify:
-        assert bands, "no stable hinge found"
-        # hinge should localise in the HB/TBD junction region (~240-320)
-        assert any(200 <= a <= 330 for a, b in bands), bands
+        assert bands, "no stable GNM nodal site found"
+        assert bands == [(289, 289), (315, 315)], bands
+        assert gap_votes[(264, 273)] == 27, gap_votes
         assert intermediates, "no intermediate projected"
-        print(f"verify OK: stable hinge bands {bands}; "
+        print(f"verify OK: gap-aware stable GNM nodal bands {bands}; "
               f"9NFQ at open->closed coord "
               f"{intermediates.get('9NFQ',{}).get('open_closed_coord',float('nan')):.2f}")
 

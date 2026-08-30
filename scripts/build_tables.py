@@ -63,7 +63,7 @@ SUP = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
 
 
 def sci(p):
-    """2.07e-143 -> '2 × 10⁻¹⁴³' (study typography, not python's e-notation)."""
+    """2.07e-143 -> '2 × 10⁻¹⁴³' (table typography, not Python e-notation)."""
     m, e = f"{p:.0e}".split("e")
     return f"{m} × 10{str(int(e)).translate(SUP)}"
 
@@ -103,10 +103,10 @@ except (FileNotFoundError, json.JSONDecodeError) as exc:
     ) from exc
 rigid_null = require_rigid_null_schema(arn)
 study_assoc = ctx.get("fisher_study_level", {})
-equal_boundary = rigid_null["equal_displacement_boundary"]
-bond_boundary = rigid_null["bond_length_preserving_boundary"]
 two_boundary = rigid_null["two_block"]
 three_boundary = rigid_null["three_block"]
+bond_boundary = rigid_null["bond_length_preserving_boundary"]
+equal_boundary = rigid_null["equal_displacement_boundary"]
 
 # ---- Table 1: key quantitative results ----
 t1 = [
@@ -139,44 +139,39 @@ t1 = [
     ("Mode-1 directional overlap within rigid-motion space",
      f"{rigid_null['per_mode'][0]['direction_cosine_in_rigid_subspace']:.2f}",
      "modes 2, 3 give 0.24, 0.11 at comparable rigid content"),
-    # Both parameterisations, because the significance depends on how many hinges the null
-    # is granted and quoting only one would misrepresent the strength of the result.
+    # Both parameterisations are reported because the significance depends on
+    # the number of independently moving domains granted by the null.
     ("Random rigid interdomain direction, two lobes",
      f"p = {two_boundary['p_exact']:.3f}",
-     (f"matched projected overlap {two_boundary['observed_projected_mode1_overlap']:.2f}; "
-      f"direction cosine in subspace {two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
-      f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null; the partition "
-      "the reported hinge implies")),
+     (f"matched-subspace direction cosine {two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null; "
+      "partition at the HB–TBD domain boundary")),
     ("Random rigid interdomain direction, three domains",
      f"p = {three_boundary['p_exact']:.3f}",
-     (f"matched projected overlap {three_boundary['observed_projected_mode1_overlap']:.2f}; "
-      f"direction cosine in subspace {three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+     (f"matched-subspace direction cosine {three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
       f"z = {three_boundary['z']:.2f}; exact {three_boundary['internal_dim']}-dimensional directional null; "
-      "one more hinge allowed")),
-    ("Random rigid direction, boundary bond length preserved",
+      "NTD, HB and TBD treated separately")),
+    ("First-order bond length preservation at the boundary",
      f"p = {bond_boundary['p_exact']:.3f}",
-     (f"z = {bond_boundary['z']:.2f}; five-dimensional subspace; deposited-displacement "
-      f"projection norm {bond_boundary['subspace_capture_of_transition']:.2f}; one scalar "
-      f"first-order bond-extension constraint; matched projected overlap "
-      f"{bond_boundary['observed_projected_mode1_overlap']:.2f}; direction cosine in subspace "
-      f"{bond_boundary['observed_direction_cosine_in_subspace']:.2f}")),
-    ("Random rigid direction, equal boundary displacement",
+     (f"matched-subspace direction cosine {bond_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {bond_boundary['z']:.2f}; five-dimensional rigid-motion subspace; "
+      "permits boundary-bond reorientation")),
+    ("Equal-displacement boundary rigid null",
      f"p = {equal_boundary['p_exact']:.3f}",
-     (f"z = {equal_boundary['z']:.2f}; three-dimensional subspace; deposited-displacement "
-      f"projection norm {equal_boundary['subspace_capture_of_transition']:.2f}; stronger "
-      f"three-component condition that also freezes bond reorientation; matched projected "
-      f"overlap {equal_boundary['observed_projected_mode1_overlap']:.2f}; direction cosine "
-      f"in subspace {equal_boundary['observed_direction_cosine_in_subspace']:.2f}")),
+     (f"matched-subspace direction cosine {equal_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {equal_boundary['z']:.2f}; "
+      "identical displacement at residues 317 and 318; three-dimensional boundary-constrained "
+      "subspace; stronger than first-order bond-length preservation")),
     ("Axis rank in the CRBN–DDB1 assembly",
      f"mode {arn['assembly']['by_cutoff']['15.0']['best_mode_rank']}",
      (f"directional overlap {arn['assembly']['by_cutoff']['15.0']['best_overlap']:.2f}; mode 1 gives "
       f"{arn['assembly']['by_cutoff']['15.0']['mode1_overlap']:.2f}; modes 1–3 are mainly two-body "
       f"motion, whereas mode 4 deforms DDB1 more than CRBN")),
     ("Higher-mode (4–20) comparison", f"z = {hm['z']:.1f}",
-     "observed overlap exceeds this baseline; the baseline is not hinge-geometry-specific"),
+     "observed overlap exceeds this baseline; the baseline is not boundary-geometry-specific"),
     ("Full-space isotropic null",
      f"p = {sci(ctx['isotropic_null_exact_tail']['p_exact'])}",
-     "observed overlap exceeds this baseline; the baseline is not hinge-geometry-specific"),
+     "observed overlap exceeds this baseline; the baseline is not boundary-geometry-specific"),
     ("Robustness", "", ""),
     ("Leave-one-closed-out (n=65)", f"{loc['min']:.3f}–{loc['max']:.3f}",
      "directional-overlap range"),
@@ -188,19 +183,18 @@ t1 = [
      "directional-overlap range; rank 1 for every pair"),
     ("Structure-ligand association", "", ""),
     # The entry-level p treats three conformers from one publication as three independent
-    # observations, so it belongs in the notes as a descriptive tabulation. An independent
-    # study-level comparison is not estimable because the sole apo publication spans both
-    # exposure states.
+    # observations, so it belongs in the counts column as a tabulation. The study-grouped
+    # comparison cannot be estimated because only one publication contributes apo entries
+    # and that same publication also contributes drug-conditioned entries.
     ("Drug-conditioned vs genuine-apo", "64/2 vs 0/3",
-     f"counts only; the entry-level Fisher p = {fisher_p:.4f} assumes independence the "
-     f"depositions do not have"),
+     f"descriptive entry-level Fisher's exact p = {fisher_p:.4f}; entries are clustered by publication"),
     ("Between-study comparison", "not estimable",
      study_assoc.get("reason", "only one publication contributes genuine-apo conformers "
                      "and it also contributes drug-conditioned conformers")),
 ]
 with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
     f.write("**Table 1. Key quantitative results.** "
-            "All values regenerate from the committed source-data package.\n\n")
+            "All values are derived from the source-data package.\n\n")
     f.write("| Quantity | Value | Notes |\n|---|---|---|\n")
     for q, v, nt in t1:
         if v == "" and nt == "":
@@ -221,7 +215,7 @@ with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
 
 # ---- Table S1: structure inventory ----
 inv = sorted(rows, key=lambda r: r["pdb"])
-# The open/closed split is the primary central classification, so the inventory has to
+# The open/closed split is the central classification, so the inventory has to
 # carry it: without this column the table cannot be used to check the 5/65 counts, and a
 # reader had to infer state from the RMSD-to-mean column.
 _cls = list(csv.DictReader(open(D / "ens_classified.csv", encoding="utf-8")))

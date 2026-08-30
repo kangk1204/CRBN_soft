@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build supplementary Fig S3: publication-group bootstrap robustness."""
+"""Build Fig. S3: publication-group bootstrap robustness."""
 
 from __future__ import annotations
 
@@ -13,17 +13,27 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from figure_package_utils import save_figure_set, write_legend_docx
+from figure_package_utils import save_figure_set
+from figure_style import (
+    BLACK,
+    BLUE,
+    DARK_GREY,
+    MID_GREY,
+    PALE_BLUE,
+    PALE_ORANGE,
+    PURPLE,
+    apply_publication_style,
+    finish_axis,
+    panel_label,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FIGURE_WIDTH_IN = 6.50  # allows for tight-bbox panel-label padding below 170 mm
 ROBUSTNESS_INPUT = ROOT / "data" / "pca_robust.npz"
 ANM_INPUT = ROOT / "data" / "crbn_anm_modes.npz"
 SOURCE_DATA = ROOT / "figures" / "source_data" / "FigS3_source_data.csv"
-LEGEND_DOCX = ROOT / "figures" / "FigS3_legend.docx"
 
-BLUE = "#3B6EA8"
-ORANGE = "#D9792B"
 HISTOGRAM_BINS = 28
 
 
@@ -127,68 +137,116 @@ def build_figure(values: dict[str, np.ndarray | float | int]) -> None:
     variance = np.asarray(values["variance"])
     overlap = np.asarray(values["overlap"])
     full_variance = float(values["full_variance"])
+    full_overlap = float(values["full_overlap"])
     anm_mode1_overlap = float(values["anm_mode1_overlap"])
     variance_low, variance_high = np.percentile(variance, [2.5, 97.5])
+    overlap_low, overlap_high = np.percentile(overlap, [2.5, 97.5])
 
-    plt.rcParams.update(
-        {
-            "font.family": "sans-serif",
-            "font.size": 8,
-            "axes.labelsize": 8.5,
-            "xtick.labelsize": 7.5,
-            "ytick.labelsize": 7.5,
-            "axes.linewidth": 0.6,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "pdf.fonttype": 42,
-            "ps.fonttype": 42,
-            "svg.hashsalt": "crbn-FigS3",
-        }
+    apply_publication_style("FigS3")
+    fig, (axa, axb) = plt.subplots(1, 2, figsize=(FIGURE_WIDTH_IN, 3.10), dpi=300)
+    fig.subplots_adjust(left=0.09, right=0.985, top=0.86, bottom=0.20, wspace=0.32)
+
+    axa.axvspan(variance_low, variance_high, color=PALE_BLUE, zorder=0)
+    axa.hist(
+        variance,
+        bins=HISTOGRAM_BINS,
+        color=BLUE,
+        alpha=0.78,
+        edgecolor="white",
+        linewidth=0.35,
+        zorder=2,
     )
-    fig, (axa, axb) = plt.subplots(1, 2, figsize=(7.2, 3.0))
-    fig.subplots_adjust(left=0.09, right=0.985, top=0.86, bottom=0.20, wspace=0.30)
-
-    axa.hist(variance, bins=HISTOGRAM_BINS, color=BLUE, alpha=0.85, linewidth=0)
-    axa.axvline(full_variance, color="black", linestyle="--", linewidth=1.2)
-    axa.axvline(variance_low, color="#888888", linestyle=":", linewidth=0.9)
-    axa.axvline(variance_high, color="#888888", linestyle=":", linewidth=0.9)
+    axa.axvline(full_variance, color=BLACK, linestyle="--", linewidth=1.25, zorder=4)
+    axa.axvline(variance_low, color=DARK_GREY, linestyle=":", linewidth=1.0, zorder=3)
+    axa.axvline(variance_high, color=DARK_GREY, linestyle=":", linewidth=1.0, zorder=3)
+    ymax_a = axa.get_ylim()[1]
     axa.annotate(
-        f"full ensemble\n{full_variance:.0f}%",
-        xy=(full_variance, axa.get_ylim()[1] * 0.97),
-        xytext=(full_variance - 10, axa.get_ylim()[1] * 0.83),
-        fontsize=7.5,
-        ha="center",
+        f"full ensemble\n{full_variance:.1f}%",
+        xy=(full_variance, ymax_a * 0.96),
+        xytext=(full_variance - 5.2, ymax_a * 0.78),
+        fontsize=8.0,
+        color=BLACK,
+        ha="right",
         va="top",
-        arrowprops={"arrowstyle": "-", "linewidth": 0.6, "color": "black"},
+        arrowprops={"arrowstyle": "-", "linewidth": 0.65, "color": BLACK},
+    )
+    axa.text(
+        0.02,
+        0.97,
+        f"95% bootstrap range\n{variance_low:.1f}–{variance_high:.1f}%",
+        transform=axa.transAxes,
+        fontsize=8.0,
+        color=DARK_GREY,
+        ha="left",
+        va="top",
     )
     axa.set_xlabel("First principal component variance fraction (%)")
-    axa.set_ylabel("bootstrap resamples")
+    axa.set_ylabel("Bootstrap resamples")
+    finish_axis(axa, grid="y")
+    axa.tick_params(which="both", top=False, right=False)
 
-    axb.hist(overlap, bins=HISTOGRAM_BINS, color=ORANGE, alpha=0.85, linewidth=0)
-    axb.axvline(anm_mode1_overlap, color="black", linewidth=1.4)
-    axb.text(
-        anm_mode1_overlap - 0.02,
-        axb.get_ylim()[1] * 0.58,
-        f"open-structure model\nmode 1 ({anm_mode1_overlap:.2f})",
-        fontsize=7.5,
+    # A log count axis is explicit and necessary here: 1,875 of 2,000 values
+    # occupy the uppermost bin, whereas occupied tail bins contain as few as one
+    # value. A linear axis would visually erase that tail.
+    axb.axvspan(overlap_low, overlap_high, color=PALE_ORANGE, zorder=0)
+    axb.hist(
+        overlap,
+        bins=HISTOGRAM_BINS,
+        color=PURPLE,
+        alpha=0.78,
+        edgecolor="white",
+        linewidth=0.35,
+        zorder=2,
+    )
+    axb.set_yscale("log")
+    axb.set_ylim(0.8, 3000)
+    # Plain-text major labels avoid undersized mathtext exponents while
+    # retaining the explicitly labelled logarithmic axis.
+    axb.set_yticks([1, 10, 100, 1000], ["1", "10", "100", "1,000"])
+    axb.tick_params(axis="y", which="minor", labelleft=False)
+    axb.axvline(anm_mode1_overlap, color=BLACK, linewidth=1.35, zorder=4)
+    axb.axvline(full_overlap, color=DARK_GREY, linestyle="--", linewidth=1.15, zorder=4)
+    axb.axvline(overlap_low, color=MID_GREY, linestyle=":", linewidth=1.0, zorder=3)
+    axb.axvline(overlap_high, color=MID_GREY, linestyle=":", linewidth=1.0, zorder=3)
+    axb.annotate(
+        f"ANM mode 1\n{anm_mode1_overlap:.3f}",
+        xy=(anm_mode1_overlap, 55),
+        xytext=(anm_mode1_overlap - 0.05, 220),
+        fontsize=8.0,
+        color=BLACK,
         ha="right",
-        va="center",
+        va="top",
+        arrowprops={"arrowstyle": "-", "linewidth": 0.65, "color": BLACK},
+    )
+    axb.annotate(
+        f"full-ensemble PC1\n{full_overlap:.3f}",
+        xy=(full_overlap, 1900),
+        xytext=(0.96, 500),
+        fontsize=8.0,
+        color=DARK_GREY,
+        ha="right",
+        va="top",
+        arrowprops={"arrowstyle": "-", "linewidth": 0.65, "color": DARK_GREY},
+    )
+    axb.text(
+        0.02,
+        0.97,
+        f"95% range {overlap_low:.3f}–{overlap_high:.3f}\n"
+        f"no open structure: {100.0 * float(values['fraction_without_open']):.1f}%",
+        transform=axb.transAxes,
+        fontsize=8.0,
+        color=DARK_GREY,
+        ha="left",
+        va="top",
     )
     axb.set_xlim(0.0, 1.02)
     axb.set_xlabel("Directional overlap with open–closed axis")
-    axb.set_ylabel("bootstrap resamples")
+    axb.set_ylabel("Bootstrap resamples (log count)")
+    finish_axis(axb, grid="y")
+    axb.tick_params(which="both", top=False, right=False)
 
-    for axis, label in ((axa, "a"), (axb, "b")):
-        axis.text(
-            -0.14,
-            1.07,
-            f"({label})",
-            transform=axis.transAxes,
-            fontsize=9,
-            fontweight="bold",
-            va="top",
-            ha="right",
-        )
+    panel_label(axa, "a", x=-0.18, y=1.10)
+    panel_label(axb, "b", x=-0.18, y=1.10)
 
     save_figure_set(fig, ROOT, "FigS3")
     plt.close(fig)
@@ -202,20 +260,6 @@ def main() -> None:
     overlap = np.asarray(values["overlap"])
     variance_low, variance_high = np.percentile(variance, [2.5, 97.5])
     overlap_low, overlap_high = np.percentile(overlap, [2.5, 97.5])
-    write_legend_docx(
-        LEGEND_DOCX,
-        "Fig S3. Bootstrap stability of the Protein Data Bank (PDB)-derived coordinate. "
-        f"Publication-group bootstrap resampling across {int(values['n_groups'])} groups "
-        f"gave a first principal component (PC1) variance fraction of {variance.mean():.0f}% "
-        f"(2.5th–97.5th percentile range {variance_low:.0f}–{variance_high:.0f}%) and "
-        f"a PC1–axis directional overlap of {overlap.mean():.2f} "
-        f"({overlap_low:.2f}–{overlap_high:.2f}). "
-        f"In {100.0 * float(values['fraction_without_open']):.1f}% of resamples no open "
-        "structure was represented. The black line in panel b marks the single-open-structure "
-        f"anisotropic network model (ANM) mode-1 directional overlap "
-        f"({float(values['anm_mode1_overlap']):.2f}). Directional overlap is the absolute "
-        "normalised dot product, ranging from 0 for orthogonal directions to 1 for the same axis.",
-    )
     print(
         f"FigS3 built: variance {variance.mean():.0f}% [{variance_low:.0f}, {variance_high:.0f}], "
         f"overlap {overlap.mean():.3f} [{overlap_low:.3f}, {overlap_high:.3f}]"

@@ -1,148 +1,420 @@
 #!/usr/bin/env python3
-"""Fig 4 - mobility map of the drug pocket.
-Reproducible from the matching archived data/render bundle (relative paths, no hardcoded values).
-Panel a: ANM square-fluctuation across the TBD (data/crbn_anm_modes.npz).
-Panel b: drug vs Zn group-mean mobility percentile for ANM, PCA (data/crbn_residue_fluctuations.csv)
-         The MD profile is deliberately NOT shown here: data/crbn_md_rmsf.csv has no
-         committed generating script, so it cannot sit in a main figure beside two
-         reproducible profiles. It is described in the Supplementary Information.
-Panel c: closed-state TBD coloured by ANM mobility, with bound S-lenalidomide and the
-         structural Zn (figures/panels/render_closed_pocket.png; scripts/render_fig4_pocket.py).
-"""
-from figure_package_utils import prepare_figure_dirs, require_prepared_panel
+"""Build Fig. 4: residue, pocket-definition and structural mobility views.
 
-FIGURES, VECTOR, PANELS = prepare_figure_dirs()
-POCKET_PANEL = require_prepared_panel(
-    PANELS / "render_closed_pocket.png",
-    "pymol -cq scripts/render_fig4_pocket.py",
-)
+Panel (b) keeps the three pre-specified UniProt ligand annotations separate
+from the seven 5FQD LVY heavy-atom contacts in the common analysis window.
+All individual percentiles are displayed; no inferential symbol, interval or
+significance bracket is added. The committed panel-(c) structural raster is
+cropped only to its alpha bounding box and is otherwise unchanged.
+"""
+
+from __future__ import annotations
 
 import csv
-import numpy as np
+import hashlib
+from pathlib import Path
+
 import matplotlib
+
 matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
+import numpy as np
+from figure_package_utils import save_figure_set
+from figure_style import (
+    AMBER,
+    ANM,
+    BLACK,
+    DARK_GREY,
+    LIGHT_GREY,
+    MAIN_WIDTH_IN,
+    ORANGE,
+    PALE_ORANGE,
+    PCA,
+    apply_publication_style,
+    finish_axis,
+    panel_label,
+    sample_size_label,
+)
+from matplotlib.lines import Line2D
 from PIL import Image
 
-DOM = {"NTD": "#3b6ea5", "HB": "#4bab8c", "TBD": "#e07b39"}
-FOCAL = "#6f4e9c"; GREY = "#9aa0a6"  # purple avoids a red/green pairing
-plt.rcParams.update({"font.family": "sans-serif", "font.size": 8.5, "pdf.fonttype": 42, "ps.fonttype": 42})
+ROOT = Path(__file__).resolve().parents[1]
+MODES_INPUT = ROOT / "data" / "crbn_anm_modes.npz"
+FLUCTUATION_INPUT = ROOT / "data" / "crbn_residue_fluctuations.csv"
+STRUCTURE_INPUT = ROOT / "figures" / "panels" / "render_closed_pocket.png"
+FROZEN_STRUCTURE_SHA256 = "e72b571169fe71ce6b6dc4c50cde67adce3fff9ae696ed3ef3482353f1e4f072"
 
-def set_frame(ax):
-    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
-def panel_letter(ax, s, x=-0.13, y=1.06):
-    ax.text(x, y, s, transform=ax.transAxes, fontsize=10, fontweight="bold", va="top", ha="right")
-def clean_svg(path):
-    with open(path, encoding="utf-8") as f:
-        txt = f.read()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(line.rstrip() for line in txt.splitlines()) + "\n")
+ANNOTATED_RESIDUES = (378, 380, 386)
+CONTACT_RESIDUES = (377, 378, 379, 380, 386, 400, 402)
+ZINC_RESIDUES = (323, 326, 391, 394)
 
-drug_res = [378, 380, 386]; zn_res = [323, 326, 391, 394]
 
-# ---- panel a data: ANM square-fluctuation from committed npz ----
-am = np.load("data/crbn_anm_modes.npz")
-resnums = am["resnums"]; ev = am["anm_eigvecs"]; ew = am["anm_eigvals"]
-anm_sqf = np.zeros(len(resnums))
-for m in range(10):
-    v = ev[:, m].reshape(-1, 3); anm_sqf += (v**2).sum(1) / ew[m]
-anm_sqf /= anm_sqf.max()
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-# ---- panel b data: group-mean percentiles from committed CSVs ----
-def load2(path):
-    rows = list(csv.DictReader(open(path)))
-    cols = rows[0].keys(); rn = np.array([int(r["resnum"]) for r in rows])
-    return rn, {c: np.array([float(r[c]) for r in rows]) for c in cols if c != "resnum"}
-def res_pct(rn, arr, res):
-    # percentile of each residue's value within the 269-residue analysis window, which is
-    # the whole of `arr`: both profiles plotted here are computed on that same window.
-    return [100.0 * np.mean(arr <= arr[rn == r][0]) for r in res if (rn == r).any()]
 
-frn, fcols = load2("data/crbn_residue_fluctuations.csv")   # 269-residue analysis window
-# Both profiles are already computed on this window, so the percentile denominator is the
-# same for each without further pooling (Fig 4b).
-indiv = {
-    "ANM": {"drug": res_pct(frn, fcols["anm_sqfluct"], drug_res), "Zn": res_pct(frn, fcols["anm_sqfluct"], zn_res)},
-    "PCA": {"drug": res_pct(frn, fcols["pca_sqfluct"], drug_res), "Zn": res_pct(frn, fcols["pca_sqfluct"], zn_res)},
-}
-conc = {m: {g: float(np.mean(v)) for g, v in d.items()} for m, d in indiv.items()}
-methods = ["ANM", "PCA"]; x = np.arange(2); w = 0.38
-drugv = [conc[m]["drug"] for m in methods]; znv = [conc[m]["Zn"] for m in methods]
+def _verify_structure_input() -> None:
+    """Require the frozen reference render used by the composite figure."""
+    if not STRUCTURE_INPUT.is_file():
+        raise FileNotFoundError(f"required frozen structural panel is missing: {STRUCTURE_INPUT}")
+    observed = _sha256(STRUCTURE_INPUT)
+    if observed != FROZEN_STRUCTURE_SHA256:
+        raise ValueError(
+            "frozen structural panel changed: "
+            f"expected {FROZEN_STRUCTURE_SHA256}, observed {observed}"
+        )
 
-fig = plt.figure(figsize=(8.2, 3.5))
-gs = GridSpec(1, 3, figure=fig, width_ratios=[1.12, 0.78, 1.35], wspace=0.42,
-              left=0.075, right=0.99, top=0.90, bottom=0.16)
 
-# panel a
-axa = fig.add_subplot(gs[0, 0])
-tbd = (resnums >= 318) & (resnums <= 424)
-# the analysis window is non-contiguous; break the trace at sequence gaps so the plot
-# does not interpolate across unresolved segments (as in Fig 3b)
-def _break_at_gaps(x, y):
-    xs, ys = [x[0]], [y[0]]
-    for i in range(1, len(x)):
-        if x[i] - x[i - 1] > 1:
-            xs.append(x[i - 1] + 0.5); ys.append(np.nan)
-        xs.append(x[i]); ys.append(y[i])
-    return np.array(xs, float), np.array(ys, float)
+def _load_anm_profile() -> tuple[np.ndarray, np.ndarray]:
+    with np.load(MODES_INPUT, allow_pickle=False) as modes:
+        residues = np.asarray(modes["resnums"], dtype=int)
+        eigenvectors = np.asarray(modes["anm_eigvecs"], dtype=float)
+        eigenvalues = np.asarray(modes["anm_eigvals"], dtype=float)
 
-tx, ty = _break_at_gaps(resnums[tbd], anm_sqf[tbd])
-axa.plot(tx, ty, color=DOM["TBD"], lw=1.1, zorder=2)
-idx = list(resnums)
-axa.scatter(drug_res, [anm_sqf[idx.index(r)] for r in drug_res], s=42, c=FOCAL,
-            edgecolor='w', lw=0.5, zorder=4, label="thalidomide-binding")
-axa.scatter(zn_res, [anm_sqf[idx.index(r)] for r in zn_res], marker='s', s=34, c='#333',
-            edgecolor='w', lw=0.5, zorder=4, label="Zn\u00b2\u207a-coordinating")
-for r in drug_res:
-    axa.annotate(str(r), (r, anm_sqf[idx.index(r)]), textcoords="offset points",
-                 xytext=(0, 6), fontsize=7.5, color=FOCAL, ha='center')
-axa.set_xlabel("residue (TBD)"); axa.set_ylabel("ANM square fluctuation")
+    if eigenvectors.shape[0] != 3 * len(residues) or eigenvectors.shape[1] < 10:
+        raise ValueError(f"ANM modes do not match the residue window: {eigenvectors.shape}")
+    if eigenvalues.shape[0] < 10 or np.any(eigenvalues[:10] <= 0):
+        raise ValueError("ANM input cannot supply ten positive-eigenvalue modes")
+    if len(np.unique(residues)) != len(residues) or np.any(np.diff(residues) <= 0):
+        raise ValueError("ANM residue identifiers must be unique and strictly increasing")
 
-axa.legend(frameon=False, fontsize=7.5, loc='upper left', handletextpad=0.3)
-axa.set_ylim(0, 1.18); set_frame(axa)
+    square_fluctuation = np.zeros(len(residues), dtype=float)
+    for mode_index in range(10):
+        mode = eigenvectors[:, mode_index].reshape(-1, 3)
+        square_fluctuation += np.square(mode).sum(axis=1) / eigenvalues[mode_index]
+    square_fluctuation /= float(square_fluctuation.max())
+    if not np.isfinite(square_fluctuation).all():
+        raise ValueError("ANM square-fluctuation profile contains non-finite values")
+    return residues, square_fluctuation
 
-# panel b
-axb = fig.add_subplot(gs[0, 1])
-axb.bar(x - w/2, drugv, w, color=FOCAL, zorder=3, label="drug-binding")
-axb.bar(x + w/2, znv, w, color='#555', zorder=3, label="zinc site")
-axb.axhline(50, ls=':', color=GREY, lw=0.8)
-for xi, (d_, z_) in enumerate(zip(drugv, znv)):
-    axb.text(xi - w/2, 2.5, f"{d_:.0f}", ha='center', va='bottom', fontsize=7.5, color='w')
-    axb.text(xi + w/2, 2.5, f"{z_:.0f}", ha='center', va='bottom', fontsize=7.5, color='w')
-# individual residue percentiles behind each group mean, so the overlap between the
-# n=3 drug-binding and n=4 zinc groups is visible
-for xi, m in enumerate(methods):
-    for off, grp in [(-w/2, "drug"), (w/2, "Zn")]:
-        v = indiv[m][grp]
-        xs = xi + off + np.linspace(-0.32, 0.32, len(v)) * w
-        axb.scatter(xs, v, s=7, facecolor='w', edgecolor='#222', lw=0.45, zorder=5, clip_on=False)
-axb.set_xticks(x); axb.set_xticklabels(methods)
-axb.set_ylabel("mean mobility percentile")
-axb.set_ylim(0, 100)
-# The exact n=3 versus n=4 limitation and non-significant rank test are stated in
-# the caption. Avoid a bracket here because it can visually imply an inferential
-# comparison even when its label says otherwise.
-axb.legend(frameon=False, fontsize=7.5, loc='lower center', ncol=2,
-           handlelength=0.9, handletextpad=0.3, columnspacing=0.8,
-           borderaxespad=0.0, bbox_to_anchor=(0.5, 1.03))
-set_frame(axb)
 
-# panel c
-axc = fig.add_subplot(gs[0, 2]); axc.axis('off')
-axc.imshow(Image.open(POCKET_PANEL))
+def _load_group_percentiles() -> tuple[dict[str, dict[str, list[float]]], np.ndarray]:
+    with FLUCTUATION_INPUT.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    residues = np.asarray([int(row["resnum"]) for row in rows], dtype=int)
+    profiles = {
+        "ANM": np.asarray([float(row["anm_sqfluct"]) for row in rows], dtype=float),
+        "PCA": np.asarray([float(row["pca_sqfluct"]) for row in rows], dtype=float),
+    }
+    if len(rows) != 269 or len(np.unique(residues)) != len(residues):
+        raise ValueError("expected 269 unique residues in the common ANM/PCA analysis window")
+    if not all(np.isfinite(profile).all() for profile in profiles.values()):
+        raise ValueError("mobility profile contains non-finite values")
 
-axc.text(0.12, 1.02, "drug-binding loop", transform=axc.transAxes,
-         fontsize=7.5, color=FOCAL, fontweight='bold', ha='left', va='bottom')
-axc.text(0.06, -0.02, "lenalidomide", transform=axc.transAxes,
-         fontsize=7.5, color='#8a7a00', ha='left', va='bottom')
-axc.text(0.98, 0.18, "Zn\u00b2\u207a site", transform=axc.transAxes,
-         fontsize=7.5, color='#111', fontweight='bold', ha='right', va='top')
+    groups: dict[str, dict[str, list[float]]] = {}
+    for method, profile in profiles.items():
+        by_residue = {int(residue): float(value) for residue, value in zip(residues, profile)}
+        missing = (set(CONTACT_RESIDUES) | set(ZINC_RESIDUES)) - set(by_residue)
+        if missing:
+            raise ValueError(f"{method} profile is missing focal residues {sorted(missing)}")
 
-for ax, l in [(axa, 'a'), (axb, 'b'), (axc, 'c')]:
-    panel_letter(ax, f"({l})")
-fig.savefig(FIGURES / "Fig4.png", dpi=300, bbox_inches="tight")
-fig.savefig(VECTOR / "Fig4.pdf", bbox_inches="tight"); fig.savefig(VECTOR / "Fig4.svg", bbox_inches="tight")
-clean_svg(VECTOR / "Fig4.svg")
-print(f"Fig4 rebuilt. "
-      f"ANM {conc['ANM']['drug']:.1f}/{conc['ANM']['Zn']:.1f}, PCA {conc['PCA']['drug']:.1f}/{conc['PCA']['Zn']:.1f}")
+        groups[method] = {
+            "annotated": [
+                100.0 * float(np.mean(profile <= by_residue[residue]))
+                for residue in ANNOTATED_RESIDUES
+            ],
+            "contact": [
+                100.0 * float(np.mean(profile <= by_residue[residue]))
+                for residue in CONTACT_RESIDUES
+            ],
+            "zinc": [
+                100.0 * float(np.mean(profile <= by_residue[residue]))
+                for residue in ZINC_RESIDUES
+            ],
+        }
+    return groups, residues
+
+
+def _break_at_gaps(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    x_out: list[float] = [float(x[0])]
+    y_out: list[float] = [float(y[0])]
+    for index in range(1, len(x)):
+        if x[index] - x[index - 1] > 1:
+            x_out.append(float(x[index - 1]) + 0.5)
+            y_out.append(np.nan)
+        x_out.append(float(x[index]))
+        y_out.append(float(y[index]))
+    return np.asarray(x_out), np.asarray(y_out)
+
+
+def _plot_residue_panel(axis, residues: np.ndarray, profile: np.ndarray) -> None:
+    tbd_mask = (residues >= 318) & (residues <= 424)
+    tbd_residues = residues[tbd_mask]
+    tbd_profile = profile[tbd_mask]
+    x_plot, y_plot = _break_at_gaps(tbd_residues, tbd_profile)
+    lookup = {int(residue): float(value) for residue, value in zip(residues, profile)}
+
+    axis.axvspan(318, 424, color=PALE_ORANGE, alpha=0.65, linewidth=0, zorder=0)
+    axis.plot(x_plot, y_plot, color=ANM, linewidth=1.45, zorder=2, label="ANM profile")
+    axis.scatter(
+        CONTACT_RESIDUES,
+        [lookup[residue] for residue in CONTACT_RESIDUES],
+        s=30,
+        marker="o",
+        facecolor="white",
+        edgecolor=ORANGE,
+        linewidth=0.9,
+        zorder=4,
+        label=f"5FQD contacts ({sample_size_label(len(CONTACT_RESIDUES))})",
+    )
+    axis.scatter(
+        ANNOTATED_RESIDUES,
+        [lookup[residue] for residue in ANNOTATED_RESIDUES],
+        s=22,
+        marker="o",
+        facecolor=ORANGE,
+        edgecolor="white",
+        linewidth=0.45,
+        zorder=5,
+        label=f"UniProt ({sample_size_label(len(ANNOTATED_RESIDUES))})",
+    )
+    axis.scatter(
+        ZINC_RESIDUES,
+        [lookup[residue] for residue in ZINC_RESIDUES],
+        s=31,
+        marker="s",
+        facecolor=BLACK,
+        edgecolor="white",
+        linewidth=0.6,
+        zorder=4,
+        label=f"Zn²⁺ ({sample_size_label(len(ZINC_RESIDUES))})",
+    )
+    label_offsets = {
+        377: (-8, -12),
+        378: (-8, 8),
+        379: (1, -12),
+        380: (2, 8),
+        386: (4, -13),
+        400: (-2, 8),
+        402: (5, -12),
+    }
+    for residue, (x_offset, y_offset) in label_offsets.items():
+        axis.annotate(
+            str(residue),
+            xy=(residue, lookup[residue]),
+            xytext=(x_offset, y_offset),
+            textcoords="offset points",
+            color=ORANGE,
+            fontsize=8.0,
+            fontweight="bold",
+            ha="center",
+        )
+    axis.set_xlim(316, 426)
+    axis.set_ylim(0, max(0.62, float(tbd_profile.max()) * 1.16))
+    axis.set_xticks([320, 350, 380, 410])
+    axis.set_xlabel("Residue (TBD)")
+    axis.set_ylabel("ANM square fluctuation\n(max-normalized)")
+    handles, labels = axis.get_legend_handles_labels()
+    axis.legend(
+        handles=handles[1:],
+        labels=labels[1:],
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.015),
+        borderaxespad=0,
+        ncol=3,
+        handlelength=0.8,
+        handletextpad=0.35,
+        columnspacing=0.65,
+    )
+    finish_axis(axis, grid="y")
+    axis.tick_params(which="both", top=False, right=False)
+
+
+def _plot_group_panel(axis, groups: dict[str, dict[str, list[float]]]) -> None:
+    group_centres = {"annotated": 0.0, "contact": 1.0, "zinc": 2.0}
+    method_offsets = {"ANM": -0.12, "PCA": 0.12}
+    method_colors = {"ANM": ANM, "PCA": PCA}
+    method_markers = {"ANM": "o", "PCA": "D"}
+
+    for method in ("ANM", "PCA"):
+        for group_name in ("annotated", "contact", "zinc"):
+            values = np.asarray(groups[method][group_name], dtype=float)
+            centre = group_centres[group_name] + method_offsets[method]
+            jitter = np.linspace(-0.037, 0.037, len(values))
+            axis.scatter(
+                centre + jitter,
+                values,
+                s=18,
+                marker=method_markers[method],
+                facecolor="white",
+                edgecolor=method_colors[method],
+                linewidth=0.75,
+                zorder=3,
+            )
+            mean = float(values.mean())
+            axis.plot(
+                [centre - 0.065, centre + 0.065],
+                [mean, mean],
+                color=method_colors[method],
+                linewidth=2.0,
+                solid_capstyle="round",
+                zorder=4,
+            )
+            axis.text(
+                centre,
+                max(4.0, mean - 8.0),
+                f"{mean:.0f}",
+                color=method_colors[method],
+                fontsize=8.0,
+                fontweight="bold",
+                ha="center",
+                va="top",
+            )
+
+    axis.axhline(50, color=LIGHT_GREY, linewidth=0.75, linestyle=":", zorder=0)
+    axis.set_xlim(-0.42, 2.42)
+    axis.set_ylim(0, 102)
+    axis.set_xticks(
+        [0, 1, 2],
+        labels=[
+            f"UniProt ligand\n{sample_size_label(len(ANNOTATED_RESIDUES))}",
+            f"5FQD contacts\n{sample_size_label(len(CONTACT_RESIDUES))}",
+            f"Zn²⁺ site\n{sample_size_label(len(ZINC_RESIDUES))}",
+        ],
+    )
+    axis.set_ylabel("Mobility percentile")
+    axis.text(
+        0.5,
+        0.10,
+        "definitions shown separately",
+        transform=axis.transAxes,
+        color=DARK_GREY,
+        fontsize=8.0,
+        ha="center",
+        va="bottom",
+    )
+    legend = [
+        Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="none",
+            markerfacecolor="white",
+            markeredgecolor=ANM,
+            color=ANM,
+            label="ANM",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="D",
+            linestyle="none",
+            markerfacecolor="white",
+            markeredgecolor=PCA,
+            color=PCA,
+            label="PCA",
+        ),
+    ]
+    axis.legend(
+        handles=legend,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.015),
+        borderaxespad=0,
+        ncol=2,
+        handlelength=0.9,
+    )
+    finish_axis(axis, grid="y")
+    axis.tick_params(which="both", top=False, right=False)
+
+
+def _plot_structure_panel(axis) -> None:
+    axis.set_axis_off()
+    with Image.open(STRUCTURE_INPUT) as source:
+        image = source.convert("RGBA")
+        alpha_box = image.getchannel("A").getbbox()
+        if alpha_box is None:
+            raise ValueError("frozen structural raster has an empty alpha channel")
+        image = image.crop(alpha_box)
+        axis.imshow(np.asarray(image), interpolation="nearest")
+
+    axis.text(
+        0.12,
+        0.98,
+        "drug-binding loop",
+        transform=axis.transAxes,
+        fontsize=8.5,
+        color=ORANGE,
+        fontweight="bold",
+        ha="left",
+        va="top",
+    )
+    axis.text(
+        0.12,
+        0.08,
+        "S-lenalidomide",
+        transform=axis.transAxes,
+        fontsize=8.5,
+        color=AMBER,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+    )
+    axis.text(
+        0.97,
+        0.19,
+        "Zn²⁺ site",
+        transform=axis.transAxes,
+        fontsize=8.5,
+        color=BLACK,
+        fontweight="bold",
+        ha="right",
+        va="top",
+    )
+
+
+def main() -> None:
+    _verify_structure_input()
+    residues, anm_profile = _load_anm_profile()
+    groups, group_residues = _load_group_percentiles()
+    if not np.array_equal(residues, group_residues):
+        raise ValueError("ANM and group-percentile inputs use different residue windows")
+    apply_publication_style("Fig4")
+
+    # Tight bounding includes the external panel labels and top keys; a
+    # 0.13-in canvas allowance keeps the exported media box at about 168 mm.
+    figure = plt.figure(figsize=(MAIN_WIDTH_IN - 0.13, 3.35))
+    grid = figure.add_gridspec(
+        1,
+        3,
+        width_ratios=(1.08, 1.08, 1.32),
+        left=0.080,
+        right=0.995,
+        bottom=0.18,
+        top=0.86,
+        wspace=0.38,
+    )
+    ax_residue = figure.add_subplot(grid[0, 0])
+    ax_group = figure.add_subplot(grid[0, 1])
+    ax_structure = figure.add_subplot(grid[0, 2])
+
+    _plot_residue_panel(ax_residue, residues, anm_profile)
+    _plot_group_panel(ax_group, groups)
+    _plot_structure_panel(ax_structure)
+    panel_label(ax_residue, "a", x=-0.18, y=1.08)
+    panel_label(ax_group, "b", x=-0.18, y=1.08)
+    panel_label(ax_structure, "c", x=-0.08, y=1.02)
+
+    save_figure_set(figure, ROOT, "Fig4")
+    plt.close(figure)
+
+    means = {
+        method: {group: float(np.mean(values)) for group, values in by_group.items()}
+        for method, by_group in groups.items()
+    }
+    print(
+        "Fig4 built (UniProt3 and 5FQD-contact7 kept separate): "
+        f"ANM annotated/contact/Zn {means['ANM']['annotated']:.3f}/"
+        f"{means['ANM']['contact']:.3f}/{means['ANM']['zinc']:.3f}; "
+        f"PCA annotated/contact/Zn {means['PCA']['annotated']:.3f}/"
+        f"{means['PCA']['contact']:.3f}/{means['PCA']['zinc']:.3f}; "
+        f"frozen raster {STRUCTURE_INPUT.name} composed without redraw"
+    )
+
+
+if __name__ == "__main__":
+    main()
