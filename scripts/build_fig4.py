@@ -25,7 +25,6 @@ from figure_style import (
     AMBER,
     ANM,
     BLACK,
-    DARK_GREY,
     LIGHT_GREY,
     MAIN_WIDTH_IN,
     ORANGE,
@@ -59,7 +58,7 @@ def _sha256(path: Path) -> str:
 
 
 def _verify_structure_input() -> None:
-    """Require the frozen reference render used by the composite figure."""
+    """Require the frozen reference render used by panel (c)."""
     if not STRUCTURE_INPUT.is_file():
         raise FileNotFoundError(f"required frozen structural panel is missing: {STRUCTURE_INPUT}")
     observed = _sha256(STRUCTURE_INPUT)
@@ -185,13 +184,13 @@ def _plot_residue_panel(axis, residues: np.ndarray, profile: np.ndarray) -> None
         label=f"Zn²⁺ ({sample_size_label(len(ZINC_RESIDUES))})",
     )
     label_offsets = {
-        377: (-8, -12),
-        378: (-8, 8),
-        379: (1, -12),
-        380: (2, 8),
-        386: (4, -13),
-        400: (-2, 8),
-        402: (5, -12),
+        377: (-22, -18),
+        378: (-17, 15),
+        379: (-18, -18),
+        380: (16, 14),
+        386: (-18, -15),
+        400: (-15, 16),
+        402: (15, -15),
     }
     for residue, (x_offset, y_offset) in label_offsets.items():
         axis.annotate(
@@ -203,31 +202,26 @@ def _plot_residue_panel(axis, residues: np.ndarray, profile: np.ndarray) -> None
             fontsize=8.0,
             fontweight="bold",
             ha="center",
+            arrowprops={
+                "arrowstyle": "-",
+                "color": ORANGE,
+                "linewidth": 0.55,
+                "shrinkA": 2.0,
+                "shrinkB": 2.0,
+            },
         )
     axis.set_xlim(316, 426)
     axis.set_ylim(0, max(0.62, float(tbd_profile.max()) * 1.16))
     axis.set_xticks([320, 350, 380, 410])
     axis.set_xlabel("Residue (TBD)")
     axis.set_ylabel("ANM square fluctuation\n(max-normalized)")
-    handles, labels = axis.get_legend_handles_labels()
-    axis.legend(
-        handles=handles[1:],
-        labels=labels[1:],
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.015),
-        borderaxespad=0,
-        ncol=3,
-        handlelength=0.8,
-        handletextpad=0.35,
-        columnspacing=0.65,
-    )
     finish_axis(axis, grid="y")
     axis.tick_params(which="both", top=False, right=False)
 
 
 def _plot_group_panel(axis, groups: dict[str, dict[str, list[float]]]) -> None:
     group_centres = {"annotated": 0.0, "contact": 1.0, "zinc": 2.0}
-    method_offsets = {"ANM": -0.12, "PCA": 0.12}
+    method_offsets = {"ANM": -0.17, "PCA": 0.17}
     method_colors = {"ANM": ANM, "PCA": PCA}
     method_markers = {"ANM": "o", "PCA": "D"}
 
@@ -255,40 +249,68 @@ def _plot_group_panel(axis, groups: dict[str, dict[str, list[float]]]) -> None:
                 solid_capstyle="round",
                 zorder=4,
             )
-            axis.text(
-                centre,
-                max(4.0, mean - 8.0),
+            label_offset = (-7, 0) if method == "ANM" else (7, 0)
+            axis.annotate(
                 f"{mean:.0f}",
+                xy=(centre, mean),
+                xytext=label_offset,
+                textcoords="offset points",
                 color=method_colors[method],
                 fontsize=8.0,
                 fontweight="bold",
-                ha="center",
-                va="top",
+                ha="right" if method == "ANM" else "left",
+                va="center",
             )
 
     axis.axhline(50, color=LIGHT_GREY, linewidth=0.75, linestyle=":", zorder=0)
-    axis.set_xlim(-0.42, 2.42)
-    axis.set_ylim(0, 102)
+    axis.set_xlim(-0.50, 2.50)
+    axis.set_ylim(0, 104)
     axis.set_xticks(
         [0, 1, 2],
         labels=[
-            f"UniProt ligand\n{sample_size_label(len(ANNOTATED_RESIDUES))}",
-            f"5FQD contacts\n{sample_size_label(len(CONTACT_RESIDUES))}",
-            f"Zn²⁺ site\n{sample_size_label(len(ZINC_RESIDUES))}",
+            f"UniProt\n({sample_size_label(len(ANNOTATED_RESIDUES))})",
+            f"5FQD\n({sample_size_label(len(CONTACT_RESIDUES))})",
+            f"Zn²⁺\n({sample_size_label(len(ZINC_RESIDUES))})",
         ],
     )
     axis.set_ylabel("Mobility percentile")
-    axis.text(
-        0.5,
-        0.10,
-        "definitions shown separately",
-        transform=axis.transAxes,
-        color=DARK_GREY,
-        fontsize=8.0,
-        ha="center",
-        va="bottom",
-    )
-    legend = [
+    finish_axis(axis, grid="y")
+    axis.tick_params(which="both", top=False, right=False)
+
+
+def _shared_legend_handles() -> list[Line2D]:
+    return [
+        Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="none",
+            markerfacecolor="white",
+            markeredgecolor=ORANGE,
+            markeredgewidth=0.9,
+            color=ORANGE,
+            label=f"5FQD contacts ({sample_size_label(len(CONTACT_RESIDUES))})",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="none",
+            markerfacecolor=ORANGE,
+            markeredgecolor="white",
+            color=ORANGE,
+            label=f"UniProt ({sample_size_label(len(ANNOTATED_RESIDUES))})",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="s",
+            linestyle="none",
+            markerfacecolor=BLACK,
+            markeredgecolor="white",
+            color=BLACK,
+            label=f"Zn²⁺ site ({sample_size_label(len(ZINC_RESIDUES))})",
+        ),
         Line2D(
             [],
             [],
@@ -310,16 +332,6 @@ def _plot_group_panel(axis, groups: dict[str, dict[str, list[float]]]) -> None:
             label="PCA",
         ),
     ]
-    axis.legend(
-        handles=legend,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.015),
-        borderaxespad=0,
-        ncol=2,
-        handlelength=0.9,
-    )
-    finish_axis(axis, grid="y")
-    axis.tick_params(which="both", top=False, right=False)
 
 
 def _plot_structure_panel(axis) -> None:
@@ -345,7 +357,7 @@ def _plot_structure_panel(axis) -> None:
     )
     axis.text(
         0.12,
-        0.08,
+        0.055,
         "S-lenalidomide",
         transform=axis.transAxes,
         fontsize=8.5,
@@ -356,7 +368,7 @@ def _plot_structure_panel(axis) -> None:
     )
     axis.text(
         0.97,
-        0.19,
+        0.25,
         "Zn²⁺ site",
         transform=axis.transAxes,
         fontsize=8.5,
@@ -375,18 +387,18 @@ def main() -> None:
         raise ValueError("ANM and group-percentile inputs use different residue windows")
     apply_publication_style("Fig4")
 
-    # Tight bounding includes the external panel labels and top keys; a
-    # 0.13-in canvas allowance keeps the exported media box at about 168 mm.
-    figure = plt.figure(figsize=(MAIN_WIDTH_IN - 0.13, 3.35))
+    # Every annotation and key stays inside the canvas so the tight export does
+    # not exceed the journal's 170-mm figure-width ceiling.
+    figure = plt.figure(figsize=(MAIN_WIDTH_IN - 0.20, 3.45))
     grid = figure.add_gridspec(
         1,
         3,
-        width_ratios=(1.08, 1.08, 1.32),
-        left=0.080,
-        right=0.995,
-        bottom=0.18,
-        top=0.86,
-        wspace=0.38,
+        width_ratios=(1.13, 1.22, 1.35),
+        left=0.075,
+        right=0.985,
+        bottom=0.235,
+        top=0.805,
+        wspace=0.42,
     )
     ax_residue = figure.add_subplot(grid[0, 0])
     ax_group = figure.add_subplot(grid[0, 1])
@@ -395,9 +407,20 @@ def main() -> None:
     _plot_residue_panel(ax_residue, residues, anm_profile)
     _plot_group_panel(ax_group, groups)
     _plot_structure_panel(ax_structure)
-    panel_label(ax_residue, "a", x=-0.18, y=1.08)
-    panel_label(ax_group, "b", x=-0.18, y=1.08)
-    panel_label(ax_structure, "c", x=-0.08, y=1.02)
+    panel_label(ax_residue, "a", x=-0.03, y=1.085)
+    panel_label(ax_group, "b", x=-0.03, y=1.085)
+    panel_label(ax_structure, "c", x=-0.03, y=1.085)
+    figure.legend(
+        handles=_shared_legend_handles(),
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.985),
+        borderaxespad=0,
+        ncol=5,
+        fontsize=8.0,
+        handlelength=0.8,
+        handletextpad=0.30,
+        columnspacing=0.65,
+    )
 
     save_figure_set(figure, ROOT, "Fig4")
     plt.close(figure)
