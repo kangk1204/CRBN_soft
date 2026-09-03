@@ -204,6 +204,8 @@ python scripts/export_figure_source_data.py
 ```
 
 Each main builder writes matching PNG, PDF, and SVG outputs from one code path.
+The supplementary builders also write Word legends to `figures/FigS1_legend.docx`,
+`figures/FigS2_legend.docx`, and `figures/FigS3_legend.docx`.
 The exporter writes exact per-panel CSV records below `figures/source_data/`.
 Generated files are written below `figures/` and `study/`; both directories are
 excluded from Git.

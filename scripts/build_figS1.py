@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from figure_package_utils import save_figure_set
+from figure_package_utils import save_figure_set, write_legend_docx
 from figure_style import (
     BLACK,
     CLOSED,
@@ -33,6 +33,16 @@ from figure_style import (
 ROOT = Path(__file__).resolve().parents[1]
 INPUT = ROOT / "data" / "crbn_curation_log.csv"
 SOURCE_DATA = ROOT / "figures" / "source_data" / "FigS1_source_data.csv"
+
+LEGEND = (
+    "Fig S1. Ensemble composition. (a) Resolution distribution of the curated 70-conformer "
+    "ensemble, stacked by ligand or substrate context: 66 drug-conditioned, one "
+    "native-substrate-bound and three genuine-apo conformers. Drug-conditioned denotes a "
+    "complex prepared with a drug, including compounds not modelled in the deposited "
+    "coordinates; genuine-apo denotes preparation without a ligand or substrate. (b) "
+    "Experimental method composition: 42 cryo-electron microscopy (cryo-EM) and 28 X-ray "
+    "crystallography structures."
+)
 
 STATE_ORDER = ["drug-conditioned", "native-substrate", "genuine-apo"]
 STATE_COLORS = {
@@ -184,6 +194,7 @@ def main() -> None:
     methods = Counter(row["method"] for row in rows)
     write_source_data(rows)
     build_figure(rows)
+    write_legend_docx(ROOT / "figures" / "FigS1_legend.docx", LEGEND)
     print(f"FigS1 built: states {dict(counts)}; methods {dict(methods)}")
 
 

@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from figure_package_utils import save_figure_set
+from figure_package_utils import save_figure_set, write_legend_docx
 from figure_style import (
     BLACK,
     BLUE,
@@ -33,6 +33,19 @@ FIGURE_WIDTH_IN = 6.50  # allows for tight-bbox panel-label padding below 170 mm
 ROBUSTNESS_INPUT = ROOT / "data" / "pca_robust.npz"
 ANM_INPUT = ROOT / "data" / "crbn_anm_modes.npz"
 SOURCE_DATA = ROOT / "figures" / "source_data" / "FigS3_source_data.csv"
+
+LEGEND = (
+    "Fig S3. Bootstrap stability of the Protein Data Bank (PDB)-derived coordinate. "
+    "Publication-group bootstrap resampling across 38 groups gave (a) a mean first principal "
+    "component (PC1) variance fraction of 86% (2.5th–97.5th percentile range 48–94%) and (b) "
+    "a mean directional overlap of 0.98 (0.75–1.00) between resampled PC1 and the fixed "
+    "mean-open-minus-mean-closed axis from the full ensemble. In 4.3% of resamples no open "
+    "structure was represented. Their PC1 overlap with the fixed axis remained defined, "
+    "although a new open-minus-closed group mean could not be calculated. The black line in "
+    "panel b marks the single-open-structure anisotropic network model (ANM) mode-1 "
+    "directional overlap (0.74). Directional overlap is the absolute normalised dot product, "
+    "ranging from 0 for orthogonal directions to 1 for the same axis."
+)
 
 HISTOGRAM_BINS = 28
 
@@ -256,6 +269,7 @@ def main() -> None:
     values = load_data()
     write_source_data(values)
     build_figure(values)
+    write_legend_docx(ROOT / "figures" / "FigS3_legend.docx", LEGEND)
     variance = np.asarray(values["variance"])
     overlap = np.asarray(values["overlap"])
     variance_low, variance_high = np.percentile(variance, [2.5, 97.5])

@@ -12,13 +12,25 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from figure_package_utils import save_figure_set
+from figure_package_utils import save_figure_set, write_legend_docx
 from figure_style import BLACK, DARK_GREY, MAIN_WIDTH_IN, apply_publication_style
 
 ROOT = Path(__file__).resolve().parents[1]
 ENSEMBLE_INPUT = ROOT / "data" / "crbn_ensemble.ens.npz"
 ANM_INPUT = ROOT / "data" / "crbn_anm_modes.npz"
 SOURCE_DATA = ROOT / "figures" / "source_data" / "FigS2_source_data.csv"
+
+LEGEND = (
+    "Fig S2. Overlap between anisotropic network model (ANM) modes and principal component "
+    "analysis (PCA) axes. The heat map compares the ten lowest-frequency internal motions "
+    "predicted from open CRBN with the ten leading directions of coordinate variation in the "
+    "Protein Data Bank (PDB) ensemble. ANM modes are ordered by increasing nonzero frequency; "
+    "principal components are ordered by decreasing explained variance. Each cell shows "
+    "directional overlap, the absolute normalised dot product (0 for orthogonal directions "
+    "and 1 for the same axis). The root-mean-square inner product (RMSIP) compares the two "
+    "ten-dimensional motion subspaces on a 0-to-1 scale and is 0.64; the directional overlap "
+    "between mode 1 and the first principal component (PC1) is 0.75."
+)
 
 
 def load_matrix() -> tuple[np.ndarray, float]:
@@ -150,6 +162,7 @@ def main() -> None:
     matrix, rmsip = load_matrix()
     write_source_data(matrix, rmsip)
     build_figure(matrix, rmsip)
+    write_legend_docx(ROOT / "figures" / "FigS2_legend.docx", LEGEND)
     print(
         f"FigS2 built: matrix {matrix.shape[0]}x{matrix.shape[1]}, "
         f"RMSIP {rmsip:.12f}, mode1-PC1 {matrix[0, 0]:.12f}, "

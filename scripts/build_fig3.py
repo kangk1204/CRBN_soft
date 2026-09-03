@@ -183,7 +183,7 @@ def main() -> None:
         right=0.985,
         bottom=0.25,
         top=0.90,
-        wspace=0.34,
+        wspace=0.48,
     )
 
     # Panel a: all-mode GNM cross-correlation in matrix-index space. True
@@ -228,14 +228,14 @@ def main() -> None:
     _, pca_plot = _break_at_gaps(residues, pca)
     for axis in (ax_high, ax_low):
         _shade_domains(axis, int(residues[0]), int(residues[-1]), axis_band)
-        axis.plot(x_plot, anm_plot, color=ANM, linewidth=1.35, label="ANM (intrinsic)")
+        axis.plot(x_plot, anm_plot, color=ANM, linewidth=1.35, label="ANM (predicted)")
         axis.plot(
             x_plot,
             pca_plot,
             color=PCA,
             linewidth=1.35,
             linestyle=(0, (4.2, 2.0)),
-            label="PCA (ensemble)",
+            label="PCA (deposited)",
         )
         axis.set_xlim(residues[0], residues[-1])
         finish_axis(axis, grid="y")
@@ -287,9 +287,9 @@ def main() -> None:
         color=DARK_GREY, fontsize=8.0, ha="center", va="center",
     )
     legend_handles = [
-        plt.Line2D([], [], color=ANM, linewidth=1.5, label="ANM (intrinsic)"),
+        plt.Line2D([], [], color=ANM, linewidth=1.5, label="ANM (predicted)"),
         plt.Line2D(
-            [], [], color=PCA, linewidth=1.5, linestyle=(0, (4.2, 2.0)), label="PCA (ensemble)"
+            [], [], color=PCA, linewidth=1.5, linestyle=(0, (4.2, 2.0)), label="PCA (deposited)"
         ),
         Patch(
             facecolor=LIGHT_GREY,
