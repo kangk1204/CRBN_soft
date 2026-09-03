@@ -23,7 +23,7 @@ SOURCE_DATA = ROOT / "figures" / "source_data" / "FigS2_source_data.csv"
 LEGEND = (
     "Fig S2. Overlap between anisotropic network model (ANM) modes and principal component "
     "analysis (PCA) axes. The heat map compares the ten lowest-frequency internal motions "
-    "predicted from open CRBN with the ten leading directions of coordinate variation in the "
+    "predicted from open cereblon (CRBN) with the ten leading directions of coordinate variation in the "
     "Protein Data Bank (PDB) ensemble. ANM modes are ordered by increasing nonzero frequency; "
     "principal components are ordered by decreasing explained variance. Each cell shows "
     "directional overlap, the absolute normalised dot product (0 for orthogonal directions "
