@@ -178,6 +178,22 @@ def compute_geometry(
         "boundary_axis_distance_A": boundary_distances,
         "boundary_endpoint_displacement_A": boundary_displacements,
         "axis_proximal_boundary_residues": proximal_boundary,
+        # A screw axis is an unbounded line, so residues far from the articulation can
+        # still be close to it.  The unrestricted scan is recorded so that the reported
+        # boundary residues are not mistaken for the only axis-proximal positions.
+        "axis_proximal_all_window_residues": {
+            str(int(residues[index])): {
+                "axis_distance_A": float(distances[index]),
+                "endpoint_displacement_A": float(endpoint_displacements[index]),
+                "domain": (
+                    "NTD"
+                    if int(residues[index]) <= 186
+                    else ("HB" if int(residues[index]) <= HB_TBD_BOUNDARY else "TBD")
+                ),
+            }
+            for index in np.argsort(distances)
+            if distances[index] <= AXIS_PROXIMITY_A
+        },
         "diagnostic_residues": {
             str(residue): {
                 "axis_distance_A": float(distances[lookup[residue]]),
