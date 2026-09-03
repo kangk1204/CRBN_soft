@@ -5,7 +5,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import stat
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -16,14 +18,28 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
 
-def load_script(name: str):
+def load_script(name: str, scripts_dir: Path = SCRIPTS):
     spec = importlib.util.spec_from_file_location(
-        f"{name}_hardening_a", SCRIPTS / f"{name}.py"
+        f"{name}_hardening_a", scripts_dir / f"{name}.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(scripts_dir))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(scripts_dir))
     return module
+
+
+def copy_scripts_only(tmp_path: Path) -> Path:
+    isolated_root = tmp_path / "release_source"
+    shutil.copytree(
+        SCRIPTS,
+        isolated_root / "scripts",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    return isolated_root
 
 
 class Artifact(dict):
@@ -156,9 +172,10 @@ def test_pca_exact_check_and_atomic_archive_write(tmp_path, monkeypatch):
 
 
 def test_tensor_module_imports_without_bulk_inputs(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    tensor = load_script("reproduce_tensor")
-    assert tensor.ROOT == ROOT
+    isolated_root = copy_scripts_only(tmp_path)
+    monkeypatch.chdir(isolated_root)
+    tensor = load_script("reproduce_tensor", isolated_root / "scripts")
+    assert tensor.ROOT == isolated_root
     assert tensor.WINSET == []
     assert tensor.UNSAFE_ALLOW_AMBIGUOUS_CHAIN is False
 

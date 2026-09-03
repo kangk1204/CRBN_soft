@@ -141,8 +141,8 @@ t1 = [
      f"{rigid_null['per_mode'][0]['direction_cosine_in_rigid_subspace']:.2f}",
      "modes 2, 3 give 0.24, 0.11 at comparable rigid content"),
     # All four parameterisations, ordered so that the two nulls which keep the chain joined
-    # at the domain boundary come first.  The two unconstrained nulls are quoted as upper
-    # bounds: they concede block rigidity but not connectivity, and none of the recorded
+    # at the domain boundary come first.  The two unconstrained nulls are references:
+    # they concede block rigidity but not connectivity, and none of the recorded
     # junction-continuity draws was as continuous as the observed transition.
     ("First-order bond length preservation at the boundary",
      f"p = {bond_boundary['p_exact']:.3f}",
@@ -159,14 +159,14 @@ t1 = [
       "subspace; stronger than first-order bond-length preservation")),
     ("Random rigid interdomain direction, two lobes",
      f"p = {two_boundary['p_exact']:.3f}",
-     ("upper bound: does not constrain the boundary, and "
+     ("unconstrained reference: does not constrain the boundary, and "
       f"{junction['fraction_of_draws_as_continuous']:.0%} of {junction['n_draws']:,} draws were as "
       "chain-continuous as the observed transition; matched-subspace direction cosine "
       f"{two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
       f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null")),
     ("Random rigid interdomain direction, three domains",
      f"p = {three_boundary['p_exact']:.3f}",
-     ("upper bound: as above, and the extra rigid boundary raises subspace capture only from "
+     ("unconstrained reference: as above, and the extra rigid boundary raises subspace capture only from "
       f"{rigid_null['two_block_capture']:.3f} to {rigid_null['three_block_capture']:.3f} while doubling "
       f"the null dimension to {three_boundary['internal_dim']}; matched-subspace direction cosine "
       f"{three_boundary['observed_direction_cosine_in_subspace']:.2f}; "

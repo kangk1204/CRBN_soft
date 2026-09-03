@@ -116,7 +116,7 @@ def _break_at_gaps(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray
 
 def _domain_strip(axis, residues: np.ndarray) -> None:
     """Add a compact domain key aligned to matrix-index space."""
-    strip = axis.inset_axes([0.0, 1.012, 1.0, 0.052], transform=axis.transAxes)
+    strip = axis.inset_axes([0.0, 1.012, 1.0, 0.070], transform=axis.transAxes)
     strip.set_xlim(-0.5, len(residues) - 0.5)
     strip.set_ylim(0, 1)
     domains = [
@@ -174,14 +174,14 @@ def main() -> None:
 
     # Tight bounding includes the external panel labels and colour bar; a
     # 0.10-in canvas allowance keeps the exported media box at about 168 mm.
-    figure = plt.figure(figsize=(MAIN_WIDTH_IN - 0.10, 3.45))
+    figure = plt.figure(figsize=(MAIN_WIDTH_IN - 0.10, 3.95))
     outer = figure.add_gridspec(
         1,
         2,
         width_ratios=(1.00, 1.22),
         left=0.075,
         right=0.985,
-        bottom=0.15,
+        bottom=0.25,
         top=0.90,
         wspace=0.34,
     )
@@ -215,7 +215,7 @@ def main() -> None:
     panel_label(ax_corr, "a", x=-0.16, y=1.13)
     colorbar = figure.colorbar(image, ax=ax_corr, fraction=0.047, pad=0.035)
     colorbar.set_ticks([-1, -0.5, 0, 0.5, 1])
-    colorbar.ax.set_title("GNM r", fontsize=8.0, fontweight="bold", pad=3)
+    colorbar.ax.set_title("GNM\n$r$", fontsize=8.0, fontweight="bold", pad=3)
     colorbar.outline.set_linewidth(0.65)
 
     # Panel b: a small upper segment keeps the 1.93x residue-222 artefact
@@ -267,17 +267,25 @@ def main() -> None:
     ax_low.annotate(
         f"PCA peak {residues[pca_peak_index]}",
         xy=(residues[pca_peak_index], pca[pca_peak_index]),
-        xytext=(358, 0.83),
+        xytext=(305, 0.85),
         arrowprops={"arrowstyle": "-", "color": PCA, "linewidth": 0.7},
         color=PCA,
         fontsize=8.0,
-        ha="right",
+        ha="center",
         va="center",
     )
-    ax_low.text(130, 0.94, "NTD", color=NTD, fontweight="bold", ha="center", va="top")
-    ax_low.text(242, 0.94, "HB", color=HB, fontweight="bold", ha="center", va="top")
-    ax_low.text(318, 0.83, "axis", color=DARK_GREY, ha="center", va="top")
-    ax_low.text(374, 0.94, "TBD", color=TBD, fontweight="bold", ha="center", va="top")
+    # Domain labels sit above the broken-axis panel so neither the labels nor
+    # the key obscure either fluctuation profile.
+    for x, label, color in ((130, "NTD", NTD), (242, "HB", HB), (374, "TBD", TBD)):
+        ax_high.text(
+            x, 1.15, label, transform=ax_high.get_xaxis_transform(),
+            color=color, fontweight="bold", ha="center", va="bottom",
+        )
+    ax_low.annotate(
+        "axis", xy=(318, 0.53), xytext=(285, 0.62),
+        arrowprops={"arrowstyle": "-", "color": DARK_GREY, "linewidth": 0.7},
+        color=DARK_GREY, fontsize=8.0, ha="center", va="center",
+    )
     legend_handles = [
         plt.Line2D([], [], color=ANM, linewidth=1.5, label="ANM (intrinsic)"),
         plt.Line2D(
@@ -290,10 +298,11 @@ def main() -> None:
             label=f"screw-axis proximity {axis_residues[0]}-{axis_residues[-1]}",
         ),
     ]
-    ax_low.legend(
+    figure.legend(
         handles=legend_handles,
-        loc="upper left",
-        bbox_to_anchor=(0.0, 0.77),
+        loc="lower center",
+        bbox_to_anchor=(0.54, 0.025),
+        ncol=3,
         borderaxespad=0,
         labelspacing=0.35,
     )

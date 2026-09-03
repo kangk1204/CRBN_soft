@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import shutil
 from collections import Counter
 from pathlib import Path
 import subprocess
@@ -22,6 +23,16 @@ def load_script(name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def copy_scripts_only(tmp_path: Path) -> Path:
+    isolated_root = tmp_path / "release_source"
+    shutil.copytree(
+        SCRIPTS,
+        isolated_root / "scripts",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    return isolated_root
 
 
 def test_pdb_id_validation_accepts_standard_ids():
@@ -298,6 +309,7 @@ B 8U15 1 1140
 
 
 def test_main_builders_are_root_relative_and_do_not_write_to_the_calling_directory(tmp_path):
+    isolated_root = copy_scripts_only(tmp_path)
     builders = [
         "build_fig1.py",
         "build_fig2.py",
@@ -309,7 +321,7 @@ def test_main_builders_are_root_relative_and_do_not_write_to_the_calling_directo
         work = tmp_path / Path(name).stem
         work.mkdir()
         result = subprocess.run(
-            [sys.executable, str(SCRIPTS / name)],
+            [sys.executable, str(isolated_root / "scripts" / name)],
             cwd=work,
             text=True,
             capture_output=True,
@@ -318,7 +330,7 @@ def test_main_builders_are_root_relative_and_do_not_write_to_the_calling_directo
         )
         assert result.returncode != 0, f"{name} unexpectedly ran without its data bundle"
         assert not (work / "figures").exists(), name
-        assert str(ROOT) in result.stderr, name
+        assert str(isolated_root) in result.stderr, name
 
 
 def test_figure_build_helpers_create_dirs_and_fail_with_generator_command(tmp_path):

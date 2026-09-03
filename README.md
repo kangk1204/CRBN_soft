@@ -57,6 +57,13 @@ with the corresponding archived software/data record. If those directories are
 not supplied with the release you received, stop here rather than substituting
 files from a different run.
 
+The accompanying reviewer bundle also contains a self-contained snapshot for
+validating figure provenance. Extract that bundle into a separate empty directory
+and follow its `README_DATA_BUNDLE.md`; its exact figure builders, validator,
+manifests and referenced files should remain together. Copy only the analysis
+inputs needed by this checkout, rather than replacing this checkout's scripts
+with the provenance snapshot.
+
 The layout should begin like this:
 
 ```text
@@ -203,7 +210,7 @@ excluded from Git.
 
 Fig. 3 reads the endpoint-derived screw-axis record and shades only residues
 316–320 near the HB–TBD boundary. Fig. 4 keeps the three UniProt ligand
-annotations separate from the seven 5FQD thalidomide heavy-atom contacts in the
+annotations separate from the seven 5FQD S-lenalidomide (LVY) heavy-atom contacts in the
 common residue window; neither definition is silently substituted for the
 other.
 

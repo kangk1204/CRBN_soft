@@ -4,6 +4,33 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", ".pytest_cache", ".ruff_cache", "__pycache__"}
+
+
+def tracked_release_paths() -> list[Path]:
+    top_level = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    assert Path(top_level).resolve() == ROOT.resolve()
+
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", "."],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    )
+    tracked = [
+        Path(name)
+        for name in result.stdout.decode("utf-8").split("\0")
+        if name
+    ]
+    assert tracked
+    return tracked
+
+
 def forbidden_release_path(path: Path) -> bool:
     banned_components = {".omx", "archive", "docs", "draft", "figures", "internal"}
     return any(part.casefold() in banned_components for part in path.parts)
@@ -11,23 +38,17 @@ def forbidden_release_path(path: Path) -> bool:
 
 def test_public_repo_contains_no_private_or_draft_paths_or_symlinks():
     offenders = []
-    for path in ROOT.rglob("*"):
-        relative = path.relative_to(ROOT)
+    tracked = tracked_release_paths()
+    for relative in tracked:
         if any(part in SKIP_DIRS for part in relative.parts):
             continue
-        if path.is_symlink() or forbidden_release_path(relative):
+        if (ROOT / relative).is_symlink() or forbidden_release_path(relative):
             offenders.append(relative.as_posix())
     assert offenders == []
 
 
 def test_tracked_release_surface_is_text_only_and_code_scoped():
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=ROOT,
-        capture_output=True,
-        check=True,
-    ).stdout.decode("utf-8").split("\0")
-    tracked = [Path(name) for name in tracked if name]
+    tracked = tracked_release_paths()
     allowed_roots = {".github", "data", "scripts", "tests"}
     allowed_root_files = {
         ".gitignore",

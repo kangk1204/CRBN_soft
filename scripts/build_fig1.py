@@ -192,7 +192,7 @@ def build_figure(values: dict[str, object]) -> None:
         ha="center",
     )
     axa.text(
-        8.88,
+        7.75,
         0.055,
         "open",
         transform=axa.get_xaxis_transform(),

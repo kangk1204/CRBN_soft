@@ -202,12 +202,12 @@ def test_table_notes_do_not_present_domain_partitions_as_hinge_calls():
     table_source = (SCRIPTS / "build_tables.py").read_text(encoding="utf-8")
     compact = " ".join(table_source.split())
     # The notes were rewritten to lead with the connectivity-preserving nulls and to mark
-    # the unconstrained ones as upper bounds. That states the same caution more directly
+    # the unconstrained ones as reference models. That states the same caution more directly
     # than the phrases it replaced, so the required strings move with it; the two
     # prohibitions below are what actually keep a domain partition from reading as a
     # hinge call, and they are unchanged.
     assert "connectivity-preserving" in compact
-    assert "upper bound: does not constrain the boundary" in compact
+    assert "unconstrained reference: does not constrain the boundary" in compact
     assert "three-dimensional boundary-rotation" in compact
     assert "inferred hinge" not in table_source
     assert "hinge-geometry-specific" not in table_source
