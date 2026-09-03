@@ -8,6 +8,7 @@ only; it does not refit a model, draw a random null, or alter a reported value.
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 from pathlib import Path
@@ -30,6 +31,7 @@ from figure_style import (
     LIGHT_GREY,
     MAGENTA,
     OPEN,
+    ORANGE,
     PALE_BLUE,
     PALE_GREEN,
     PALE_ORANGE,
@@ -46,6 +48,7 @@ ROBUSTNESS_INPUT = ROOT / "data" / "anm_robustness.json"
 NULL_INPUT = ROOT / "data" / "anm_null_significance.json"
 RIGID_NULL_INPUT = ROOT / "data" / "assembly_rigid_null.json"
 ENSEMBLE_INPUT = ROOT / "data" / "crbn_ensemble.ens.npz"
+CURATION_INPUT = ROOT / "data" / "crbn_curation_log.csv"
 DIFFERENCE_INPUT = ROOT / "data" / "pca_diffvec.npz"
 
 NULL_X = np.linspace(0.0, 1.0, 1001)
@@ -238,6 +241,21 @@ def draw_rigid_null_panel(ax_density, ax_result, rigid: dict) -> None:
     ax_result.tick_params(which="both", top=False, right=False)
 
 
+def _open_reference_states(open_labels) -> dict[str, str]:
+    """Map each open reference to its committed experimental context.
+
+    Fig 5c contrasts the genuine-apo references with the engineered
+    drug-conditioned ones, so the split must come from the curation log rather
+    than from a literal list that could drift away from the census.
+    """
+    with CURATION_INPUT.open(encoding="utf-8", newline="") as handle:
+        recorded = {row["pdb"]: row["global_state"] for row in csv.DictReader(handle)}
+    missing = [label for label in open_labels if label not in recorded]
+    if missing:
+        raise KeyError(f"open references absent from the curation log: {missing}")
+    return {label: recorded[label] for label in open_labels}
+
+
 def draw_cutoff_panel(ax, robustness: dict) -> None:
     cutoffs = np.asarray([float(value) for value in robustness["cutoffs"]])
     open_labels = robustness["open_set"]
@@ -250,10 +268,20 @@ def draw_cutoff_panel(ax, robustness: dict) -> None:
             for label in open_labels
         ]
     )
-    for row in values:
+    # The legend contrasts the three genuine-apo references with the two engineered
+    # drug-conditioned ones, so the panel has to encode that split.  The assignment is
+    # read from the committed curation log rather than hard-coded here.
+    states = _open_reference_states(open_labels)
+    for label, row in zip(open_labels, values):
+        drug_conditioned = states[label] != "genuine-apo"
         ax.plot(
-            cutoffs, row, color=BLUE, alpha=0.30, linewidth=0.95,
-            marker="o", markersize=3.0, markerfacecolor="white",
+            cutoffs, row,
+            color=ORANGE if drug_conditioned else BLUE,
+            alpha=0.55 if drug_conditioned else 0.30,
+            linewidth=0.95,
+            linestyle=(0, (4.0, 1.8)) if drug_conditioned else "-",
+            marker="s" if drug_conditioned else "o",
+            markersize=3.0, markerfacecolor="white",
             markeredgewidth=0.65,
         )
     mean = values.mean(axis=0)
@@ -272,13 +300,20 @@ def draw_cutoff_panel(ax, robustness: dict) -> None:
     ax.set_xticks(cutoffs)
     ax.set_xlabel("ANM contact cutoff (Å)")
     ax.set_ylabel("Mode-1 directional overlap")
+    n_apo = sum(1 for label in open_labels if states[label] == "genuine-apo")
+    n_drug = len(open_labels) - n_apo
     ax.legend(
         handles=[
             Line2D(
-                [], [], color=BLUE, alpha=0.35, marker="o",
-                markerfacecolor="white", label="five open references",
+                [], [], color=BLUE, alpha=0.40, marker="o",
+                markerfacecolor="white", label=f"genuine apo ({n_apo})",
             ),
-            Line2D([], [], color=BLUE, linewidth=2.1, marker="o", label="mean"),
+            Line2D(
+                [], [], color=ORANGE, alpha=0.65, marker="s",
+                linestyle=(0, (4.0, 1.8)), markerfacecolor="white",
+                label=f"drug-conditioned ({n_drug})",
+            ),
+            Line2D([], [], color=BLUE, linewidth=2.1, marker="o", label="mean of five"),
         ],
         ncol=1, loc="lower right", fontsize=8.0,
     )
