@@ -211,15 +211,17 @@ with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
         else:
             f.write(f"| {q} | {v} | {nt} |\n")
     f.write(
-        "\n*Abbreviations: ANM, anisotropic network model, which estimates collective motion "
-        "from residue contacts; Cα, alpha carbon, one representative position per residue; "
-        "CRBN, cereblon; cryo-EM, cryo-electron microscopy; DDB1, DNA damage-binding protein 1; "
-        "PCA, principal component analysis; PC, principal component; RMSIP, root-mean-square "
-        "inner product, which compares two motion subspaces. Directional overlap is the absolute "
-        "normalised dot product between two unit vectors; cumulative overlap is a subspace-projection "
-        "norm. Both range from 0 to 1 and are not variance fractions. Å denotes ångström; n denotes a "
-        "count; p denotes probability under the stated null; z denotes standardised distance from the "
-        "exact null mean using its exact population standard deviation.*\n"
+        "\n*Abbreviations: ANM, anisotropic network model, which predicts collective motion from residue\n"
+        "contacts; Cα, alpha carbon, one representative position per residue; CRBN, cereblon; cryo-EM,\n"
+        "cryo-electron microscopy; DDB1, DNA damage-binding protein 1; PCA, principal component analysis;\n"
+        "PC, principal component; RMSIP, root-mean-square inner product, which compares two sets of motion\n"
+        "directions. Mode numbers give increasing frequency within each independently calculated model,\n"
+        "after excluding whole-structure translation and rotation; rank 1 means the highest directional\n"
+        "overlap among the modes tested. Directional overlap is the absolute normalised dot product\n"
+        "between two vectors. Cumulative overlap is the projection norm onto the space spanned by a set\n"
+        "of modes. Both range from 0 to 1 and are not ensemble variance fractions. Å denotes ångström;\n"
+        "n denotes a count; p denotes a tail probability under the stated null model; z denotes the\n"
+        "distance from the exact null mean in units of its exact population standard deviation.*\n"
     )
 
 # ---- Table S1: structure inventory ----
@@ -248,9 +250,11 @@ with open(D / "table_s1_inventory.csv", "w", newline="\n", encoding="utf-8") as 
         w.writerow([r["pdb"], conf[r["pdb"]], r["state"], r["global_state"], r["method"],
                     r["resolution"], r["rmsd_to_mean"], pc1_of[r["pdb"]]])
 with open(TAB / "TableS1.md", "w", newline="\n", encoding="utf-8") as f:
-    f.write("**Table S1. Curated structure inventory (70 conformers; search date 20 July 2026).** "
-            "The full source table is "
-            "`data/table_s1_inventory.csv`.\n\n")
+    f.write("**Table S1. Curated structure inventory (70 conformers; search date 20 July 2026).** The full\n"
+            "source table is `data/table_s1_inventory.csv`. Conformation is assigned from the first "
+            "principal component (PC1) gap; ligand\n"
+            "state and global state describe ligand or substrate context (Supplementary Methods S3). These\n"
+            "categories do not imply that a bound compound is resolved in every deposited model.\n\n")
     f.write("| PDB | Conformation | Ligand state | Global state | Method "
             "| Resolution (Å) | RMSD to mean (Å) |\n")
     f.write("|---|---|---|---|---|---|---|\n")
@@ -259,7 +263,7 @@ with open(TAB / "TableS1.md", "w", newline="\n", encoding="utf-8") as f:
                 f"| {r['method']} | {display_resolution(r['resolution'])} "
                 f"| {r['rmsd_to_mean']} |\n")
     f.write(
-        "\n*Abbreviations: cryo-EM, cryo-electron microscopy; PDB, Protein Data Bank; RMSD, "
+        "\n*Abbreviations: cryo-EM, cryo-electron microscopy; PDB, Protein Data Bank; RMSD,\n"
         "root-mean-square deviation from the ensemble mean after structural superposition. "
         "Å denotes ångström.*\n"
     )
