@@ -61,13 +61,22 @@ cmd.hide("everything")
 cmd.show("cartoon", "pocket")
 cmd.set("cartoon_transparency", 0.0)
 
-# colour the backbone by within-TBD mobility percentile
-cmd.alter("pocket", "b=0.0")
-for rn, mv in zip(resnums, mob):
-    if TBD_LO <= int(rn) <= TBD_HI:
-        cmd.alter("pocket and resi %d" % int(rn), "b=%f" % float(mv))
+# Colour the backbone by within-TBD normalised ANM mobility.
+# Residues outside the analysis window have no mobility value. Keep them grey
+# and exclude them from the spectrum instead of assigning zero mobility.
+scored = {int(rn): float(mv) for rn, mv in zip(resnums, mob)
+          if TBD_LO <= int(rn) <= TBD_HI}
+if not scored:
+    raise RuntimeError("no TBD residue carries an ANM value")
+cmd.alter("pocket", "b=-1.0")
+for rn, mv in scored.items():
+    cmd.alter("pocket and resi %d" % rn, "b=%f" % mv)
 cmd.sort()
-cmd.spectrum("b", "blue_white_red", "pocket and name CA", minimum=0.0, maximum=1.0)
+measured = "pocket and resi " + "+".join(str(r) for r in sorted(scored))
+cmd.color("grey70", "pocket")
+cmd.spectrum("b", "blue_white_red", measured + " and name CA", minimum=0.0, maximum=1.0)
+print("Fig4c: %d TBD residues coloured by mobility, %d grey (outside the analysis window)"
+      % (len(scored), (TBD_HI - TBD_LO + 1) - len(scored)))
 
 # functional-site side chains
 sel_drug = "pocket and resi " + "+".join(map(str, DRUG)) + " and not name N+C+O"

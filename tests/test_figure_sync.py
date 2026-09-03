@@ -161,7 +161,7 @@ def test_release_render_hash_contracts_and_table_labels_are_current():
     }
     assert (
         fig4.FROZEN_STRUCTURE_SHA256
-        == "e72b571169fe71ce6b6dc4c50cde67adce3fff9ae696ed3ef3482353f1e4f072"
+        == "06fd1faa7b375f0dcc5610dab364145b280c3c173d97af2e38b0c922a6a9f8e9"
     )
 
     table_source = (SCRIPTS / "build_tables.py").read_text(encoding="utf-8")

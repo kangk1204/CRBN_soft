@@ -42,7 +42,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MODES_INPUT = ROOT / "data" / "crbn_anm_modes.npz"
 FLUCTUATION_INPUT = ROOT / "data" / "crbn_residue_fluctuations.csv"
 STRUCTURE_INPUT = ROOT / "figures" / "panels" / "render_closed_pocket.png"
-FROZEN_STRUCTURE_SHA256 = "e72b571169fe71ce6b6dc4c50cde67adce3fff9ae696ed3ef3482353f1e4f072"
+# Panel (c) leaves residues outside the analysis window grey and unscored.
+FROZEN_STRUCTURE_SHA256 = "06fd1faa7b375f0dcc5610dab364145b280c3c173d97af2e38b0c922a6a9f8e9"
 
 ANNOTATED_RESIDUES = (378, 380, 386)
 CONTACT_RESIDUES = (377, 378, 379, 380, 386, 400, 402)
