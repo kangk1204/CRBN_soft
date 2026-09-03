@@ -167,7 +167,8 @@ def test_release_render_hash_contracts_and_table_labels_are_current():
     table_source = (SCRIPTS / "build_tables.py").read_text(encoding="utf-8")
     assert "First-order bond length preservation at the boundary" in table_source
     assert "Equal-displacement boundary rigid null" in table_source
-    assert "descriptive entry-level Fisher's exact" in table_source
+    assert "entry-level Fisher's exact" in table_source
+    assert "does not account for clustering within publications" in table_source
     assert "Random rigid direction, equal boundary displacement" not in table_source
 
 

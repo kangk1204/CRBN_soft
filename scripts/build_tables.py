@@ -136,10 +136,10 @@ t1 = [
     ("Calibration", "", ""),
     ("Two-block rigid-motion subspace",
      f"{two_boundary['subspace_capture_of_transition']:.2f}",
-     "projection norm of the open-to-closed axis; geometric upper bound without an elastic-network model"),
+     "projection norm of the open-to-closed axis; maximum overlap within this rigid-motion subspace"),
     ("Mode-1 directional overlap within rigid-motion space",
      f"{rigid_null['per_mode'][0]['direction_cosine_in_rigid_subspace']:.2f}",
-     "modes 2, 3 give 0.24, 0.11 at comparable rigid content"),
+     "modes 2, 3 give 0.24, 0.11 although all three modes are largely rigid-body motions"),
     # All four parameterisations, ordered so that the two nulls which keep the chain joined
     # at the domain boundary come first.  The two unconstrained nulls are references:
     # they concede block rigidity but not connectivity, and none of the recorded
@@ -161,12 +161,12 @@ t1 = [
      f"p = {two_boundary['p_exact']:.3f}",
      ("unconstrained reference: does not constrain the boundary, and "
       f"{junction['fraction_of_draws_as_continuous']:.0%} of {junction['n_draws']:,} draws were as "
-      "chain-continuous as the observed transition; matched-subspace direction cosine "
+      "continuous at the domain boundary as the observed transition; matched-subspace direction cosine "
       f"{two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
       f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null")),
     ("Random rigid interdomain direction, three domains",
      f"p = {three_boundary['p_exact']:.3f}",
-     ("unconstrained reference: as above, and the extra rigid boundary raises subspace capture only from "
+     ("unconstrained reference: as above, and allowing separate N-terminal-domain and helical-bundle motion raises the projection norm only from "
       f"{rigid_null['two_block_capture']:.3f} to {rigid_null['three_block_capture']:.3f} while doubling "
       f"the null dimension to {three_boundary['internal_dim']}; matched-subspace direction cosine "
       f"{three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
@@ -177,10 +177,10 @@ t1 = [
       f"{arn['assembly']['by_cutoff']['15.0']['mode1_overlap']:.2f}; modes 1–3 are mainly two-body "
       f"motion, whereas mode 4 deforms DDB1 more than CRBN")),
     ("Higher-mode (4–20) comparison", f"z = {hm['z']:.1f}",
-     "observed overlap exceeds this baseline; the baseline is not rotation-axis-geometry-specific"),
+     "observed overlap exceeds this baseline; the baseline does not preserve the domain-rotation geometry"),
     ("Full-space isotropic null",
      f"p = {sci(ctx['isotropic_null_exact_tail']['p_exact'])}",
-     "observed overlap exceeds this baseline; the baseline is not rotation-axis-geometry-specific"),
+     "observed overlap exceeds this baseline; the baseline does not preserve the domain-rotation geometry"),
     ("Robustness", "", ""),
     ("Leave-one-closed-out (n=65)", f"{loc['min']:.3f}–{loc['max']:.3f}",
      "directional-overlap range"),
@@ -196,10 +196,10 @@ t1 = [
     # comparison cannot be estimated because only one publication contributes apo entries
     # and that same publication also contributes drug-conditioned entries.
     ("Drug-conditioned vs genuine-apo", "64/2 vs 0/3",
-     f"descriptive entry-level Fisher's exact p = {fisher_p:.4f}; entries are clustered by publication"),
-    ("Between-study comparison", "not estimable",
-     study_assoc.get("reason", "only one publication contributes genuine-apo conformers "
-                     "and it also contributes drug-conditioned conformers")),
+     f"entry-level Fisher's exact p = {fisher_p:.4f}; the test does not account for clustering within publications"),
+    ("Between-study comparison", study_assoc.get("status", "not_estimable").replace("_", " "),
+     "Only one publication contributes genuine-apo structures, and it also contributes "
+     "drug-conditioned structures. Its two conditions do not constitute independent studies."),
 ]
 with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
     f.write("**Table 1. Key quantitative results.** "
