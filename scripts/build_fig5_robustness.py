@@ -232,7 +232,11 @@ def draw_rigid_null_panel(ax_density, ax_result, rigid: dict) -> None:
             0.02, y, format_p(float(record["p_exact"])), color=BLACK,
             fontsize=8.0, va="center", ha="left",
         )
-    ax_result.set_yticks(y_positions, [row[1] for row in result_rows])
+    # Wrap the long label so it stays between the two panels.
+    ax_result.set_yticks(
+        y_positions,
+        [row[1].replace("equal displacement", "equal\ndisplacement") for row in result_rows],
+    )
     ax_result.set_xlim(0.0, 1.0)
     ax_result.set_ylim(-0.65, len(result_rows) - 0.35)
     ax_result.set_xlabel("Observed direction cosine")
