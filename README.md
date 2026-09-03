@@ -57,8 +57,8 @@ with the corresponding archived software/data record. If those directories are
 not supplied with the release you received, stop here rather than substituting
 files from a different run.
 
-The accompanying reviewer bundle also contains a self-contained snapshot for
-validating figure provenance. Extract that bundle into a separate empty directory
+That same distributed bundle also contains a self-contained snapshot for
+validating figure provenance. Extract it into a separate empty directory
 and follow its `README_DATA_BUNDLE.md`; its exact figure builders, validator,
 manifests and referenced files should remain together. Copy only the analysis
 inputs needed by this checkout, rather than replacing this checkout's scripts
