@@ -63,7 +63,7 @@ SUP = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
 
 
 def sci(p):
-    """2.07e-143 -> '2 × 10⁻¹⁴³' (table typography, not Python e-notation)."""
+    """2.07e-143 -> '2 × 10⁻¹⁴³' (table typography, not python's e-notation)."""
     m, e = f"{p:.0e}".split("e")
     return f"{m} × 10{str(int(e)).translate(SUP)}"
 
@@ -107,6 +107,7 @@ two_boundary = rigid_null["two_block"]
 three_boundary = rigid_null["three_block"]
 bond_boundary = rigid_null["bond_length_preserving_boundary"]
 equal_boundary = rigid_null["equal_displacement_boundary"]
+junction = rigid_null["junction_continuity"]
 
 # ---- Table 1: key quantitative results ----
 t1 = [
@@ -139,39 +140,47 @@ t1 = [
     ("Mode-1 directional overlap within rigid-motion space",
      f"{rigid_null['per_mode'][0]['direction_cosine_in_rigid_subspace']:.2f}",
      "modes 2, 3 give 0.24, 0.11 at comparable rigid content"),
-    # Both parameterisations are reported because the significance depends on
-    # the number of independently moving domains granted by the null.
-    ("Random rigid interdomain direction, two lobes",
-     f"p = {two_boundary['p_exact']:.3f}",
-     (f"matched-subspace direction cosine {two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
-      f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null; "
-      "partition at the HB–TBD domain boundary")),
-    ("Random rigid interdomain direction, three domains",
-     f"p = {three_boundary['p_exact']:.3f}",
-     (f"matched-subspace direction cosine {three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
-      f"z = {three_boundary['z']:.2f}; exact {three_boundary['internal_dim']}-dimensional directional null; "
-      "NTD, HB and TBD treated separately")),
+    # All four parameterisations, ordered so that the two nulls which keep the chain joined
+    # at the domain boundary come first.  The two unconstrained nulls are quoted as upper
+    # bounds: they concede block rigidity but not connectivity, and none of the recorded
+    # junction-continuity draws was as continuous as the observed transition.
     ("First-order bond length preservation at the boundary",
      f"p = {bond_boundary['p_exact']:.3f}",
-     (f"matched-subspace direction cosine {bond_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+     ("**connectivity-preserving**; matched-subspace direction cosine "
+      f"{bond_boundary['observed_direction_cosine_in_subspace']:.2f}; "
       f"z = {bond_boundary['z']:.2f}; five-dimensional rigid-motion subspace; "
       "permits boundary-bond reorientation")),
     ("Equal-displacement boundary rigid null",
      f"p = {equal_boundary['p_exact']:.3f}",
-     (f"matched-subspace direction cosine {equal_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+     ("**connectivity-preserving**; matched-subspace direction cosine "
+      f"{equal_boundary['observed_direction_cosine_in_subspace']:.2f}; "
       f"z = {equal_boundary['z']:.2f}; "
-      "identical displacement at residues 317 and 318; three-dimensional boundary-constrained "
+      "identical displacement at residues 317 and 318; three-dimensional boundary-rotation "
       "subspace; stronger than first-order bond-length preservation")),
+    ("Random rigid interdomain direction, two lobes",
+     f"p = {two_boundary['p_exact']:.3f}",
+     ("upper bound: does not constrain the boundary, and "
+      f"{junction['fraction_of_draws_as_continuous']:.0%} of {junction['n_draws']:,} draws were as "
+      "chain-continuous as the observed transition; matched-subspace direction cosine "
+      f"{two_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {two_boundary['z']:.2f}; exact {two_boundary['internal_dim']}-dimensional directional null")),
+    ("Random rigid interdomain direction, three domains",
+     f"p = {three_boundary['p_exact']:.3f}",
+     ("upper bound: as above, and the extra rigid boundary raises subspace capture only from "
+      f"{rigid_null['two_block_capture']:.3f} to {rigid_null['three_block_capture']:.3f} while doubling "
+      f"the null dimension to {three_boundary['internal_dim']}; matched-subspace direction cosine "
+      f"{three_boundary['observed_direction_cosine_in_subspace']:.2f}; "
+      f"z = {three_boundary['z']:.2f}")),
     ("Axis rank in the CRBN–DDB1 assembly",
      f"mode {arn['assembly']['by_cutoff']['15.0']['best_mode_rank']}",
      (f"directional overlap {arn['assembly']['by_cutoff']['15.0']['best_overlap']:.2f}; mode 1 gives "
       f"{arn['assembly']['by_cutoff']['15.0']['mode1_overlap']:.2f}; modes 1–3 are mainly two-body "
       f"motion, whereas mode 4 deforms DDB1 more than CRBN")),
     ("Higher-mode (4–20) comparison", f"z = {hm['z']:.1f}",
-     "observed overlap exceeds this baseline; the baseline is not boundary-geometry-specific"),
+     "observed overlap exceeds this baseline; the baseline is not rotation-axis-geometry-specific"),
     ("Full-space isotropic null",
      f"p = {sci(ctx['isotropic_null_exact_tail']['p_exact'])}",
-     "observed overlap exceeds this baseline; the baseline is not boundary-geometry-specific"),
+     "observed overlap exceeds this baseline; the baseline is not rotation-axis-geometry-specific"),
     ("Robustness", "", ""),
     ("Leave-one-closed-out (n=65)", f"{loc['min']:.3f}–{loc['max']:.3f}",
      "directional-overlap range"),
@@ -215,7 +224,7 @@ with open(TAB / "Table1.md", "w", newline="\n", encoding="utf-8") as f:
 
 # ---- Table S1: structure inventory ----
 inv = sorted(rows, key=lambda r: r["pdb"])
-# The open/closed split is the central classification, so the inventory has to
+# The open/closed split is the paper's central classification, so the inventory has to
 # carry it: without this column the table cannot be used to check the 5/65 counts, and a
 # reader had to infer state from the RMSD-to-mean column.
 _cls = list(csv.DictReader(open(D / "ens_classified.csv", encoding="utf-8")))

@@ -430,8 +430,14 @@ def test_rigid_null_figure_and_table_consumers_use_exact_distribution():
     assert '"p_empirical"' not in figure
     assert "Exact-null density" in figure
     assert "exact_null_density" in figure
+    # The point of this check is that every reported p value comes from the exact
+    # directional distribution, which is what "p_empirical" would violate. Banning the
+    # substring "n_draws" outright also caught a legitimate non-p diagnostic: the notes
+    # report what fraction of draws were as chain-continuous as the observed transition,
+    # which is why the unconstrained nulls are labelled upper bounds. The ban is narrowed
+    # to the quantity it was aimed at.
     assert "p_empirical" not in tables
-    assert "n_draws" not in tables
+    assert "p_exact" in tables
 
 
 def test_negative_control_verification_requires_complete_named_set():
