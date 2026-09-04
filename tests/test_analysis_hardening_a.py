@@ -171,6 +171,55 @@ def test_pca_exact_check_and_atomic_archive_write(tmp_path, monkeypatch):
         pca.verify_exact({"array": np.asarray([1, 2]), "count": 3})
 
 
+def test_pca_cluster_bootstrap_is_invariant_to_study_label_renaming(tmp_path, monkeypatch):
+    pca = load_script("pca_robustness")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    np.savez(data_dir / "crbn_ensemble.ens.npz", placeholder=np.asarray([1]))
+    np.savez(data_dir / "pca_diffvec.npz", placeholder=np.asarray([1]))
+    conformers = np.asarray(
+        [
+            [[0.0, 0.1, 0.0], [0.2, 0.0, 0.5]],
+            [[1.0, 0.0, 0.3], [0.4, 0.7, 0.1]],
+            [[0.3, 1.4, 0.2], [1.1, 0.1, 0.0]],
+            [[2.0, 0.2, 0.9], [0.0, 1.3, 0.4]],
+            [[1.6, 1.7, 0.1], [1.5, 0.2, 0.8]],
+            [[0.5, 0.6, 1.8], [0.8, 1.1, 0.2]],
+        ],
+        dtype=float,
+    )
+    labels = np.asarray(["A", "B", "C", "D", "E", "F"])
+    open_mask = np.asarray([True, False, False, True, False, False])
+    axis = np.asarray([0.60, 0.48, 0.36, 0.24, 0.12, 0.456070170039655], dtype=float)
+
+    monkeypatch.setattr(pca, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        pca,
+        "validate_ensemble_diff",
+        lambda _ensemble, _difference: (conformers, labels, open_mask, axis),
+    )
+    partitions = {
+        "A": "a", "D": "a",
+        "B": "b", "E": "b",
+        "C": "c", "F": "c",
+    }
+    renamed = {
+        "A": "c", "D": "c",
+        "B": "b", "E": "b",
+        "C": "a", "F": "a",
+    }
+
+    monkeypatch.setattr(pca, "load_study_groups", lambda _labels: partitions)
+    first = pca.build_results()
+    monkeypatch.setattr(pca, "load_study_groups", lambda _labels: renamed)
+    second = pca.build_results()
+
+    np.testing.assert_array_equal(first["vfs"], second["vfs"])
+    np.testing.assert_array_equal(first["ovs"], second["ovs"])
+    assert first["frac_resamples_without_open"] == second["frac_resamples_without_open"]
+    assert first["n_groups"] == second["n_groups"] == 3
+
+
 def test_tensor_module_imports_without_bulk_inputs(tmp_path, monkeypatch):
     isolated_root = copy_scripts_only(tmp_path)
     monkeypatch.chdir(isolated_root)

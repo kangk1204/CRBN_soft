@@ -142,11 +142,18 @@ def build_results() -> dict[str, object]:
     grouped_indices: dict[str, list[int]] = {}
     for index, pdb_id in enumerate(label_list):
         grouped_indices.setdefault(study_for[pdb_id], []).append(index)
-    group_keys = sorted(grouped_indices)
-    if not group_keys:
+    # Sort by the actual partition, not by arbitrary source-study labels. If a
+    # study label is renamed while the same conformers remain grouped together,
+    # the seeded cluster bootstrap should remain bit-identical.
+    group_members = sorted(
+        (sorted(members) for members in grouped_indices.values()),
+        key=lambda members: members,
+    )
+    if not group_members:
         raise ValueError("no source-study groups are available for bootstrap resampling")
+    n_groups = len(group_members)
     print(
-        f"study groups: {len(group_keys)} over {n_conformers} conformers "
+        f"study groups: {n_groups} over {n_conformers} conformers "
         f"(largest {max(len(value) for value in grouped_indices.values())})"
     )
 
@@ -162,8 +169,8 @@ def build_results() -> dict[str, object]:
         open_indices,
         lambda rng: [
             index
-            for group_index in rng.choice(len(group_keys), len(group_keys))
-            for index in grouped_indices[group_keys[int(group_index)]]
+            for group_index in rng.choice(n_groups, n_groups)
+            for index in group_members[int(group_index)]
         ],
     )
 
@@ -176,7 +183,7 @@ def build_results() -> dict[str, object]:
         f"{np.percentile(entry_overlap, 97.5):.2f}]"
     )
     print(
-        f"Cluster bootstrap ({len(group_keys)} groups) var {cluster_variance.mean():.0f}% "
+        f"Cluster bootstrap ({n_groups} groups) var {cluster_variance.mean():.0f}% "
         f"[{np.percentile(cluster_variance, 2.5):.0f},"
         f"{np.percentile(cluster_variance, 97.5):.0f}]  "
         f"overlap {cluster_overlap.mean():.3f} "
@@ -210,7 +217,7 @@ def build_results() -> dict[str, object]:
         "vf_closed": closed_variance,
         "vfs_entry": entry_variance,
         "ovs_entry": entry_overlap,
-        "n_groups": len(group_keys),
+        "n_groups": n_groups,
         "frac_resamples_without_open": no_open / len(cluster_variance),
     }
 

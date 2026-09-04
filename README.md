@@ -139,6 +139,31 @@ python scripts/pca_robustness.py --verify
 python scripts/anm_null_significance.py --verify
 ```
 
+Study-group bootstrap draws are ordered by group membership, so changing
+citation labels without changing the groups leaves the seeded results unchanged.
+
+## Score another CRBN structure
+
+With the matching input bundle in `data/`, project a local mmCIF structure onto
+the fixed PCA coordinate without refitting the reference:
+
+```bash
+python scripts/score_structure.py path/to/structure.cif --chain B
+python scripts/score_structure.py --self-test
+```
+
+A four-character PDB identifier can replace the local path; this downloads the
+coordinates from RCSB. The selected chain must resolve all 269 reference residue
+positions using the same author numbering. For PDB identifiers, automatic chain
+selection uses the CRBN UniProt mapping when available. Without a mapping, it
+accepts a single chain covering the full window; use `--chain` to select the
+intended CRBN chain when the input is ambiguous.
+
+The coordinate is scaled to a closed-group mean of 0 and an open-group mean of 1.
+Reported closed, intermediate and open labels describe position along
+this geometric reference. The self-test checks projection against all 70
+reference conformers.
+
 ## Rebuild from Protein Data Bank coordinates
 
 The following checks connect to the RCSB Protein Data Bank. They download raw
