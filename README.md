@@ -142,6 +142,95 @@ python scripts/anm_null_significance.py --verify
 Study-group bootstrap draws are ordered by group membership, so changing
 citation labels without changing the groups leaves the seeded results unchanged.
 
+
+## Run the strengthening analyses
+
+The CSBJ strengthening workflows use one neutral output root. By default this is
+`results/strengthening/`; release builders may pass another path with
+`--output-dir`. The public code does not include generated mmCIF, EMDB, figure,
+or table artifacts. Stage required inputs in the documented `data/` and
+`render/` layout before running numerical stages.
+
+If you received a review data bundle ZIP, verify and stage it from the checkout
+root before running the strengthening workflow:
+
+```bash
+python scripts/stage_strengthening_bundle.py /path/to/crbn_strengthening_bundle.zip
+```
+
+The staging helper checks `BUNDLE_MANIFEST.json`, verifies every byte count and
+SHA256 digest, rejects traversal paths, symlinks, unexpected ZIP members, and
+conflicting existing files, and then writes only approved payload roles. Bundle
+members below `data/` and `render/` are staged into the checkout. Members below
+`strengthening/` are staged into the selected output root, which defaults to
+`results/strengthening/` and can be changed with `--output-dir`. Verified ZIP
+aliases are materialized only when the source hash matches the manifest. Control
+mmCIF files staged under `strengthening/data/controls/` are also copied into the
+checkout cache `data/_controls_cif_cache/` for the controls workflow.
+
+Show the exact commands without executing them:
+
+```bash
+python scripts/run_strengthening.py --show-commands
+```
+
+Run all strengthening stages:
+
+```bash
+python scripts/run_strengthening.py
+```
+
+Run selected stages or force cache-only execution:
+
+```bash
+python scripts/run_strengthening.py --stages ensemble contacts controls
+python scripts/run_strengthening.py --offline --stages ensemble ddb1 contacts controls external figures
+```
+
+The offline command above uses the supplied numerical bundle. The `maps` stage
+additionally requires separately acquired raw maps (about 2.42 GB in this
+snapshot). It does not run the generated ChimeraX fitting script automatically.
+Figure legend generation requires python-docx; PDF table extraction requires
+Poppler (`pdftotext`, tested version 26.08.0). These are listed in the environment
+file. The tested scientific runtime used Python 3.11.14 and the versions in
+`environment.yml`; Conda build availability can differ by platform.
+
+The stages are:
+
+- `ensemble`: live RCSB Q96SW2 inventory, eligibility curation, fixed frozen-PC1
+  scoring, per-reference ANM rankings, temporal ANM rankings, and fixed/own-basis
+  pair rankings. It writes coordinate downloads under
+  `results/strengthening/data/structures/` unless `--structure-dir` is supplied.
+- `ddb1`: matched isolated, joint, zero-interface, statically relaxed and
+  fixed-DDB1 models over the same CRBN positions. Joint mode ranks and CRBN
+  directional overlap/amplitude are separate; Schur eigenvalues describe
+  effective static stiffness.
+- `contacts`: normalized closure-compliance perturbations for the two
+  prespecified residue-contact classes, `CRBN_DDB1` and `HB_TBD`, including
+  all effects, shared edges, insufficient controls and stability outcomes.
+- `controls`: endpoint, tangent, paired-state, residue-set, and external-panel
+  controls using frozen scoring contracts.
+- `external`: engineered-construct SAXS curve refits and retrospective
+  extraction/comparison of published functional measurements. Missing files
+  remain explicit.
+- `maps`: EMDB metadata and map acquisition plus optional local-density checks.
+  UCSF ChimeraX assets are generated as scripts/configuration only. Installing
+  or downloading ChimeraX requires the user/licensee to review and accept the
+  UCSF ChimeraX Non-Commercial Software License Agreement manually.
+- `figures`: builds strengthening figures and source-data tables from the staged
+  stage outputs. The runner writes figure files under
+  `results/strengthening/manuscript/figures/`.
+
+Offline mode reads existing cache files and generated inputs only. It is intended
+for reproducibility checks after a successful online acquisition; it is not
+evidence that absent external files do not exist.
+
+Key output locations under the selected output root are `analysis/<stage>/` for
+CSV/JSON summaries, `data/structures/` for RCSB mmCIF files, `data/maps/` for
+EMDB artifacts, `logs/` for `run_strengthening.py` stage logs,
+`manuscript/figures/` for rendered strengthening figures, and
+`analysis/figure_sources/` for figure source data and manifests.
+
 ## Score another CRBN structure
 
 With the matching input bundle in `data/`, project a local mmCIF structure onto

@@ -22,15 +22,16 @@ The caveat turns out to be half right. The cullin arm touches nothing in CRBN, b
     is zero on the cullin rows, D is not: RBX1 lies 7.3 A from the degron and 4.9 A
     from UBE2D1, and CUL4A packs against DDB1 over more than a thousand C-alpha
     pairs. The scaffold therefore stiffens DDB1 and the degron, and that stiffening
-    propagates into CRBN's condensed Hessian. Measured on the ladder, adding
+    propagates into CRBN's quasi-static condensed Hessian. Measured on the ladder, adding
     CUL4A+RBX1+NEDD8 on top of DDB1+degron+E2 shifts the mode-1 overlap by up to
-    0.193 (9V0A, 0.543 to 0.736) and raises the mode-1 eigenvalue 1.32-1.45x. The
-    "biological unit is larger" objection is therefore answered by measurement, not
-    by a distance argument.
+    0.193 (9V0A, 0.543 to 0.736) and raises the mode-1 Schur stiffness eigenvalue
+    1.32-1.45x. This does not mean the physical assembly frequency is preserved or
+    measured; the "biological unit is larger" objection is answered by static
+    stiffness measurement, not by a distance argument.
 
 (2) WHAT DOES TOUCH CRBN IS THE DEGRON AND E2. The degron lies 5.1-6.1 A away with
     360-410 C-alpha pairs inside 15 A, and UBE2D1 5.7-6.3 A with 138-153 pairs.
-    Neither was in any earlier network calculation. On the open structures the analysis
+    Neither was in any network in the manuscript. On the open structures the claim
     actually rests on -- 6H0F and 7U8F, the two open ternaries -- including the
     degron leaves the result unchanged: mode-1 overlap 0.761 to 0.766 for 6H0F and
     0.767 to 0.757 for 7U8F, rank 1 throughout, stiffening only 1.10-1.12x. The
@@ -39,8 +40,8 @@ The caveat turns out to be half right. The cullin arm touches nothing in CRBN, b
 
 (3) A SIDE RESULT WORTH REPORTING. On the four closed assemblies the same nesting
     changes the picture substantially: monomer mode-1 overlap is 0.011-0.097
-    (closed structures are poor ANM references for this transition, matching the
-    endpoint-asymmetry result), and adding DDB1 plus the
+    (closed structures are poor ANM references for this transition, which is the
+    manuscript's existing endpoint-asymmetry result), and adding DDB1 plus the
     degron raises it to 0.362-0.599, with everything that contacts CRBN included
     reaching 0.392-0.736. So assembly context partially rescues the closed
     endpoint. This does not affect the open-reference claim and should be reported
@@ -107,7 +108,7 @@ ASSEMBLIES = {
 }
 
 # The two OPEN ternary structures: the only open depositions carrying a degron, so the
-# only ones that can test degron inclusion against the open-reference result.
+# only ones that can test degron inclusion against the manuscript's actual claim.
 OPEN_TERNARIES = {
     "6H0F": dict(crbn="B", ddb1="A", degron="C", glue="pomalidomide"),
     "7U8F": dict(crbn="A", ddb1="B", degron="C", glue="DKY709"),
@@ -233,8 +234,10 @@ def load_reference():
 def condensed_spectrum(crbn_xyz, partner_blocks, axis, cutoff=CUTOFF):
     """Slowest CRBN modes with partners condensed out exactly (Schur complement).
 
-    With no partners this is the free monomer. With partners it is CRBN's own
-    dynamics carrying their mechanical influence but not their modes.
+    With no partners this is the free monomer. With partners it is CRBN's
+    quasi-static reduced stiffness after partner relaxation; partner modes are not
+    counted as CRBN modes, and the returned eigenvalues are not physical assembly
+    dynamic frequencies.
     """
     n_c = len(crbn_xyz)
     if partner_blocks:
@@ -323,17 +326,19 @@ def summarise(closed, open_):
             cutoff=CUTOFF,
             conclusion=("CUL4A, RBX1 and NEDD8 make no C-alpha pair within the 15 A cutoff in any "
                         "of the four complete assemblies (nearest approach 22.9-28.4 A), so they "
-                        "add no spring directly to CRBN. They still enter its condensed Hessian "
+                        "add no spring directly to CRBN. They still enter its quasi-static "
+                        "condensed Hessian "
                         "indirectly: H_eff = A - B D^+ B^T has B zero on the cullin rows but D is "
                         "not, and the scaffold stiffens DDB1 and the degron. Including them on top "
                         "of DDB1+degron+E2 changes the closed-endpoint mode-1 overlap by up to "
-                        "0.193 and the mode-1 eigenvalue by 1.32-1.45x, so the effect is indirect "
-                        "but not negligible.")),
+                        "0.193 and the mode-1 Schur stiffness eigenvalue by 1.32-1.45x. This is "
+                        "an indirect static stiffness effect, not a preserved physical assembly "
+                        "frequency.")),
         subunits_that_do_contact_crbn=dict(
             min_distance_range={k: [round(min(v), 1), round(max(v), 1)]
                                 for k, v in touch_min.items() if v},
-            note=("The degron and E2 touch CRBN and were absent from every earlier network "
-                  "calculation; DDB1 was the only partner previously tested.")),
+            note=("The degron and E2 touch CRBN and were absent from every network in the "
+                  "manuscript; DDB1 was the only partner previously tested.")),
         open_reference_claim_unaffected=dict(
             structures=[r["pdb"] for r in open_],
             monomer_mode1=[round(r["ladder"]["monomer"]["mode1_overlap"], 3) for r in open_],
@@ -443,7 +448,7 @@ def main() -> int:
         assert oc["max_change"] < 0.05, oc
         assert oc["stiffening_range"][1] < 1.3, oc
         # The scaffold contributes no direct spring but is NOT inert: it stiffens DDB1 and the
-        # degron, and that propagates through D^+ into CRBN's condensed Hessian. This bound is
+        # degron, and that propagates through D^+ into CRBN's static condensed Hessian. This bound is
         # the measured effect, not a claim that the effect is zero -- an earlier version of this
         # script asserted the spectrum was unchanged "to all reported digits" without ever
         # running that comparison, and the number below is what the comparison actually gives.

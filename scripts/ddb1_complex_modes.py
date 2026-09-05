@@ -2,17 +2,17 @@
 """Does the open->closed soft mode survive when the obligate adaptor DDB1 is in
 the network?
 
-The central structure-based analysis uses an anisotropic network model (ANM) of
-the CRBN monomer. A structural biologist can object that the biological unit is
+The manuscript's central claim is built on an anisotropic network model (ANM) of
+the CRBN monomer. A structural biologist will object that the biological unit is
 not the monomer: CRBN is an obligate partner of DDB1 within CRL4^CRBN, and every
 open structure in the ensemble is deposited as a CRBN-DDB1 complex. If the
 transition axis is only the softest mode of the isolated fold and stops being so
-once the adaptor is present, the inference is about an object that does not exist in
+once the adaptor is present, the claim is about an object that does not exist in
 the cell.
 
 This script answers that with four calculations per structure.
 
-(1) MONOMER BASELINE reproduces the per-structure reference value, so the rest
+(1) MONOMER BASELINE reproduces the manuscript's per-structure value, so the rest
     is anchored to a number the reader can check.
 
 (2) JOINT SPECTRUM builds one ANM over CRBN plus DDB1 (about 1400 C-alpha) and
@@ -35,18 +35,17 @@ This script answers that with four calculations per structure.
 
 (4) GUYAN / SCHUR-COMPLEMENT REDUCTION condenses the DDB1 coordinates out
     exactly, H_eff = A - B D^+ B^T on the CRBN block. What remains is CRBN's own
-    dynamics carrying the adaptor's full mechanical influence but not counting
-    DDB1's own modes. This is the physically pointed question -- does the adaptor
-    stiffen this hinge, or merely add slower motions of its own? -- and the answer
-    is stable across every structure and both cutoffs tested: the reduction
-    reproduces the free-monomer rank exactly (10 of 10 calculations) with the
-    overlap essentially unchanged (mean +0.017), while the eigenvalue rises by a
-    factor of 1.0-2.0. DDB1 stiffens the hinge without moving it within CRBN's own
-    spectrum, so the joint-spectrum displacement is DDB1 contributing motions of
-    its own rather than the adaptor reordering CRBN's internal modes. The claim is
-    rank preservation, not rank 1 everywhere: for the two ternary structures at
-    13 A the free monomer itself places the axis at rank 2, and the reduction
-    reproduces that.
+    static response after DDB1 is allowed to relax, without counting DDB1's own
+    modes as CRBN modes. This is a quasi-static stiffness calculation, not a
+    physical frequency calculation for the complex. It asks whether the adaptor
+    statically stiffens this hinge, or merely adds slower joint modes of its own.
+    In this legacy calculation the reduction reproduces the free-monomer rank
+    exactly (10 of 10 calculations) with the overlap essentially unchanged
+    (mean +0.017), while the unit-spring Schur eigenvalue rises by a factor of
+    1.0-2.0. The claim is static rank preservation within the reduced CRBN block,
+    not preservation of actual dynamic frequencies and not rank 1 everywhere:
+    for the two ternary structures at 13 A the free monomer itself places the axis
+    at rank 2, and the reduction reproduces that.
 
 Reference frames are load-bearing here. ANM eigenvectors are expressed in the
 frame of the input coordinates, while the committed difference vector lives in
@@ -99,7 +98,7 @@ CACHE_WRITES_ENABLED = True
 # CRBN chain and DDB1 chain for each structure carrying a resolved 269-residue window.
 # 7U8F deposits CRBN as chain A and DDB1 as chain B; the others are the reverse.
 CASES = [
-    ("8CVP", "B", "A", "apo cryo-EM, ANM reference structure"),
+    ("8CVP", "B", "A", "apo cryo-EM, ANM reference of the manuscript"),
     ("8D7X", "B", "A", "apo cryo-EM"),
     ("8D7Y", "B", "A", "apo cryo-EM, DDB1 twisted conformation"),
     ("6H0F", "B", "A", "pomalidomide + IKZF1 ternary, open"),
@@ -400,10 +399,12 @@ def summarise(records):
                   "calculation (rank 1 at both cutoffs for the three apo structures and at "
                   "15 A for the two ternary ones; rank 2 for the two ternary structures at "
                   "13 A, matching their free-monomer rank there). Overlap is essentially "
-                  "unchanged (mean +0.017, range -0.008 to +0.046) while the eigenvalue rises "
-                  "1.0-2.0x. DDB1 stiffens the hinge without changing where it sits in CRBN's "
-                  "own spectrum; the joint-spectrum displacement comes from DDB1's added "
-                  "motions, not from the adaptor altering CRBN's internal mode ordering.")),
+                  "unchanged (mean +0.017, range -0.008 to +0.046) while the unit-spring "
+                  "Schur eigenvalue rises 1.0-2.0x. This is a quasi-static stiffness result "
+                  "for the reduced CRBN block, not a preserved physical dynamic frequency for "
+                  "the complex. DDB1 stiffens the hinge without changing where it sits in "
+                  "CRBN's own static reduced spectrum; the joint-spectrum displacement comes "
+                  "from DDB1's added modes.")),
         caveats=[
             "The biological unit is larger still: CRL4^CRBN also contains CUL4A, RBX1 and NEDD8. "
             "scripts/crl4_assembly_modes.py shows these make zero C-alpha contacts with CRBN "
@@ -473,7 +474,7 @@ def main() -> int:
           f"{summary['decoy_aligned_rank_range']}; rank shift is "
           f"{100 * dec['contact_share_of_total']:.0f}% contact-driven "
           f"(size effect {dec['size_effect_range']}, contact {dec['contact_effect_range']}); "
-          f"condensing DDB1 out reproduces the free-monomer rank in "
+          f"static Schur reduction of DDB1 reproduces the free-monomer rank in "
           f"{eff['rank_preserved_fraction']:.0%} of calculations, overlap change "
           f"{eff['mean_overlap_change']:+.3f}, stiffening {eff['stiffening_range']}x")
 
@@ -489,7 +490,7 @@ def main() -> int:
             summary["interface_created_modes"]
         print("verify OK: the joint-spectrum rank shift is majority contact-driven "
               f"({100 * dec['contact_share_of_total']:.0f}%), not a mode-count artefact; "
-              "condensing DDB1 out reproduces the free-monomer rank in every calculation "
+              "static Schur reduction of DDB1 reproduces the free-monomer rank in every calculation "
               f"({eff['rank_preserved_fraction']:.0%}) with overlap unchanged "
               f"({eff['mean_overlap_change']:+.3f}) and 1.0-2.0x stiffening")
     return 0

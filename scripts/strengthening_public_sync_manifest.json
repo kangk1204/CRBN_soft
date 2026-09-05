@@ -1,0 +1,159 @@
+{
+  "generated_at_utc": "2026-09-05T03:56:00.195861+00:00",
+  "scope": "CSBJ strengthening public analysis-code synchronization",
+  "note": "All 19 listed analysis/config/test/figure files are source-identical between the private strengthening revision and public code.",
+  "files": [
+    {
+      "path": "scripts/strengthen_ensemble.py",
+      "source_sha256": "b984ce7e8c05c8fa5705f9d5417b638c03fc8e1984a22a8ccd193688a56bc954",
+      "source_bytes": 42156,
+      "public_sha256": "b984ce7e8c05c8fa5705f9d5417b638c03fc8e1984a22a8ccd193688a56bc954",
+      "public_bytes": 42156,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/strengthen_ddb1.py",
+      "source_sha256": "ef277c81863983eaa525201c3496d4fde478c3b4a6b1d309997f275560fe3b00",
+      "source_bytes": 44833,
+      "public_sha256": "ef277c81863983eaa525201c3496d4fde478c3b4a6b1d309997f275560fe3b00",
+      "public_bytes": 44833,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/strengthen_contacts.py",
+      "source_sha256": "d5519faa4e5e2f617ec4093e9c69d8928280545941c5858ef365ee0406148288",
+      "source_bytes": 20759,
+      "public_sha256": "d5519faa4e5e2f617ec4093e9c69d8928280545941c5858ef365ee0406148288",
+      "public_bytes": 20759,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/strengthen_controls.py",
+      "source_sha256": "bc1faa98c431ddd63660183d41efff09c9ecd94bad9dd4bdf8875358dc2ef12e",
+      "source_bytes": 60398,
+      "public_sha256": "bc1faa98c431ddd63660183d41efff09c9ecd94bad9dd4bdf8875358dc2ef12e",
+      "public_bytes": 60398,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/strengthen_external.py",
+      "source_sha256": "b05f222c068f1dd8063dce03b435717af3036930d265971463a9375ae65d5c86",
+      "source_bytes": 58282,
+      "public_sha256": "b05f222c068f1dd8063dce03b435717af3036930d265971463a9375ae65d5c86",
+      "public_bytes": 58282,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/strengthen_maps.py",
+      "source_sha256": "2af2941b5195ef0d90e9c263d223603d2f6908ab5fd85815fffce53f97b10543",
+      "source_bytes": 59519,
+      "public_sha256": "2af2941b5195ef0d90e9c263d223603d2f6908ab5fd85815fffce53f97b10543",
+      "public_bytes": 59519,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/run_strengthening.py",
+      "source_sha256": "e382224ebf015380a7b59ff7ad2de1ac95ca6e36eb4a23f7ff4b781d2e14e85a",
+      "source_bytes": 4607,
+      "public_sha256": "e382224ebf015380a7b59ff7ad2de1ac95ca6e36eb4a23f7ff4b781d2e14e85a",
+      "public_bytes": 4607,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/strengthening_config.json",
+      "source_sha256": "4af815eaa5f9e660c937fd29aea967696cd67e8ae2b00b5e0f929354574d3b31",
+      "source_bytes": 2361,
+      "public_sha256": "4af815eaa5f9e660c937fd29aea967696cd67e8ae2b00b5e0f929354574d3b31",
+      "public_bytes": 2361,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/stage_strengthening_bundle.py",
+      "source_sha256": "4a144cd565aa5b8070d1c521d19611d74bb8f13c94f26babf4c6fd0da1fbbf77",
+      "source_bytes": 4205,
+      "public_sha256": "4a144cd565aa5b8070d1c521d19611d74bb8f13c94f26babf4c6fd0da1fbbf77",
+      "public_bytes": 4205,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthen_ensemble.py",
+      "source_sha256": "9d203e5f15666a121e546de0d12d4e2e6e629be7668ea85bcb9d1c2b0294626e",
+      "source_bytes": 4064,
+      "public_sha256": "9d203e5f15666a121e546de0d12d4e2e6e629be7668ea85bcb9d1c2b0294626e",
+      "public_bytes": 4064,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthen_ddb1.py",
+      "source_sha256": "cab1ec3535279ace79f3da57ab9841807d108c6a38db051b90d8c69a2ec66ab7",
+      "source_bytes": 6006,
+      "public_sha256": "cab1ec3535279ace79f3da57ab9841807d108c6a38db051b90d8c69a2ec66ab7",
+      "public_bytes": 6006,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthen_contacts.py",
+      "source_sha256": "e87c8e71af508b0dfbd8e1540aa8b87ff26856979c6d8448319af4c31e54fe78",
+      "source_bytes": 5531,
+      "public_sha256": "e87c8e71af508b0dfbd8e1540aa8b87ff26856979c6d8448319af4c31e54fe78",
+      "public_bytes": 5531,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthen_controls.py",
+      "source_sha256": "e1cd806942e835a6e6dcc676a5f6ec37df83319132500d39539c470ea86e48e5",
+      "source_bytes": 7199,
+      "public_sha256": "e1cd806942e835a6e6dcc676a5f6ec37df83319132500d39539c470ea86e48e5",
+      "public_bytes": 7199,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthen_external.py",
+      "source_sha256": "54fc30ebcc808cdd07935c6cc42325d3c25e9dff9bd90f12b3da9545846e0e8c",
+      "source_bytes": 5441,
+      "public_sha256": "54fc30ebcc808cdd07935c6cc42325d3c25e9dff9bd90f12b3da9545846e0e8c",
+      "public_bytes": 5441,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthen_maps.py",
+      "source_sha256": "8978c40f2a5f8568f5821d890bb2e4cd41b926d0ba07966a71b72bc2797ee3c2",
+      "source_bytes": 18629,
+      "public_sha256": "8978c40f2a5f8568f5821d890bb2e4cd41b926d0ba07966a71b72bc2797ee3c2",
+      "public_bytes": 18629,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_stage_strengthening_bundle.py",
+      "source_sha256": "6f70b85582ccb9cbff98810d46514e697eeb3a1e052a10ac4f6628c140e2d94a",
+      "source_bytes": 2216,
+      "public_sha256": "6f70b85582ccb9cbff98810d46514e697eeb3a1e052a10ac4f6628c140e2d94a",
+      "public_bytes": 2216,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/ddb1_complex_modes.py",
+      "source_sha256": "c13e50aa2d54bad0f029f8411a83f00eb7f2472e1c8a0946b4d7ac75d5daaadd",
+      "source_bytes": 24937,
+      "public_sha256": "c13e50aa2d54bad0f029f8411a83f00eb7f2472e1c8a0946b4d7ac75d5daaadd",
+      "public_bytes": 24937,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/crl4_assembly_modes.py",
+      "source_sha256": "cc1ab9329db9095ba8ff0f68805bae3dbc55746164eaf873b725840e2cf84e00",
+      "source_bytes": 22776,
+      "public_sha256": "cc1ab9329db9095ba8ff0f68805bae3dbc55746164eaf873b725840e2cf84e00",
+      "public_bytes": 22776,
+      "public_matches_source": true
+    },
+    {
+      "path": "scripts/build_strengthening_figures.py",
+      "source_sha256": "f43873b11bb1bdefa072843de5afbc513f810808882679b510a75df3a6cc3c8f",
+      "public_sha256": "f43873b11bb1bdefa072843de5afbc513f810808882679b510a75df3a6cc3c8f",
+      "source_bytes": 104326,
+      "public_bytes": 104326,
+      "public_matches_source": true
+    }
+  ]
+}
