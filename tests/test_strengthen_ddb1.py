@@ -145,6 +145,53 @@ def test_higher_modes_do_not_change_primary_best20_fields():
     assert summary["higher_mode_21_60_changes_sensitivity_best"] is True
 
 
+def test_sparse_slow_modes_match_dense_subspace_for_semidefinite_anm():
+    module = load_module()
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        dtype=float,
+    )
+    hessian = module.anm_hessian(coords, cutoff=1.75)
+    dense_values, dense_vectors = module.slow_modes(hessian, 8)
+    sparse_values, sparse_vectors = module.slow_modes_sparse(
+        module.sparse.csr_matrix(hessian), 8, rigid_modes=6
+    )
+
+    all_values = np.linalg.eigvalsh(hessian)
+    assert np.count_nonzero(all_values <= module.ZERO_TOL) == 6
+    assert sparse_values == pytest.approx(dense_values, abs=1e-8)
+    residuals = module.eigenpair_residuals(
+        module.sparse.csr_matrix(hessian), sparse_values, sparse_vectors
+    )
+    assert float(residuals.max()) < 1e-9
+
+    overlap = np.linalg.svd(dense_vectors.T @ sparse_vectors, compute_uv=False)
+    rmsip = float(np.sqrt(np.mean(overlap**2)))
+    assert rmsip > 0.999999
+
+
+def test_sparse_slow_modes_are_repeatable_on_near_degenerate_model():
+    module = load_module()
+    rng = np.random.default_rng(20260905)
+    coords = rng.normal(size=(14, 3))
+    hessian = module.sparse.csr_matrix(module.anm_hessian(coords, cutoff=2.4))
+
+    values_a, vectors_a = module.slow_modes_sparse(hessian, 12, rigid_modes=6)
+    values_b, vectors_b = module.slow_modes_sparse(hessian, 12, rigid_modes=6)
+
+    assert values_b == pytest.approx(values_a, abs=0.0)
+    assert np.linalg.norm(np.abs(vectors_b) - np.abs(vectors_a)) == pytest.approx(0.0, abs=1e-12)
+
+
 def test_near_degenerate_subspace_rank_trim_ignores_duplicate_projected_vectors():
     module = load_module()
     coords = np.array(

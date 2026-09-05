@@ -104,6 +104,7 @@ class SourceRecord:
     bytes: int | None = None
     sha256: str | None = None
     error: str | None = None
+    current_run_status: str | None = None
 
 
 def utc_now() -> str:
@@ -130,6 +131,77 @@ def fetch_url(url: str, *, timeout: int = 45) -> tuple[int | None, bytes, str | 
         return None, b"", str(exc)
 
 
+def load_previous_source_manifest(path: Path) -> dict[str, SourceRecord]:
+    if not path.is_file():
+        return {}
+    try:
+        rows = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    records: dict[str, SourceRecord] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            source_id = str(row["source_id"])
+            records[source_id] = SourceRecord(
+                source_id=source_id,
+                url=str(row.get("url", "")),
+                local_path=row.get("local_path"),
+                retrieved_utc=str(row.get("retrieved_utc", "")),
+                status=str(row.get("status", "")),
+                bytes=row.get("bytes"),
+                sha256=row.get("sha256"),
+                error=row.get("error"),
+                current_run_status=row.get("current_run_status"),
+            )
+        except KeyError:
+            continue
+    return records
+
+
+def offline_record_from_snapshot(
+    previous: SourceRecord | None,
+    fallback: SourceRecord,
+    *,
+    current_run_status: str,
+) -> SourceRecord:
+    if previous is None:
+        return SourceRecord(
+            fallback.source_id,
+            fallback.url,
+            fallback.local_path,
+            fallback.retrieved_utc,
+            fallback.status,
+            fallback.bytes,
+            fallback.sha256,
+            fallback.error,
+            current_run_status,
+        )
+    if current_run_status == "cached":
+        if previous.bytes is not None and fallback.bytes != previous.bytes:
+            raise RuntimeError(
+                f"cached source {previous.source_id} differs from frozen manifest: "
+                f"bytes {fallback.bytes} != {previous.bytes}"
+            )
+        if previous.sha256 is not None and fallback.sha256 != previous.sha256:
+            raise RuntimeError(
+                f"cached source {previous.source_id} differs from frozen manifest: "
+                f"sha256 {fallback.sha256} != {previous.sha256}"
+            )
+    return SourceRecord(
+        previous.source_id,
+        previous.url or fallback.url,
+        fallback.local_path if fallback.local_path is not None else previous.local_path,
+        previous.retrieved_utc,
+        previous.status,
+        previous.bytes,
+        previous.sha256,
+        previous.error,
+        current_run_status,
+    )
+
+
 def acquire(
     source_id: str,
     url: str,
@@ -137,14 +209,17 @@ def acquire(
     filename: str,
     *,
     offline: bool,
+    previous: SourceRecord | None = None,
 ) -> SourceRecord:
     path = data_dir / filename
     retrieved = utc_now()
     if offline:
         if path.is_file():
             data = path.read_bytes()
-            return SourceRecord(source_id, url, str(path), retrieved, "cached", len(data), sha256_bytes(data))
-        return SourceRecord(source_id, url, str(path), retrieved, "missing_offline", error="not present in cache")
+            fallback = SourceRecord(source_id, url, str(path), retrieved, "cached", len(data), sha256_bytes(data))
+            return offline_record_from_snapshot(previous, fallback, current_run_status="cached")
+        fallback = SourceRecord(source_id, url, str(path), retrieved, "missing_offline", error="not present in cache")
+        return offline_record_from_snapshot(previous, fallback, current_run_status="missing_offline")
 
     status, data, error = fetch_url(url)
     if status is not None and 200 <= status < 300 and data:
@@ -158,10 +233,17 @@ def acquire(
     return SourceRecord(source_id, url, str(path), retrieved, f"http_{status}" if status else "failed", error=error)
 
 
-def check_url(source_id: str, url: str, *, offline: bool) -> SourceRecord:
+def check_url(
+    source_id: str,
+    url: str,
+    *,
+    offline: bool,
+    previous: SourceRecord | None = None,
+) -> SourceRecord:
     retrieved = utc_now()
     if offline:
-        return SourceRecord(source_id, url, None, retrieved, "not_checked_offline")
+        fallback = SourceRecord(source_id, url, None, retrieved, "not_checked_offline")
+        return offline_record_from_snapshot(previous, fallback, current_run_status="not_checked_offline")
     status, data, error = fetch_url(url)
     sha = sha256_bytes(data) if data else None
     return SourceRecord(
@@ -478,6 +560,7 @@ def run(args: argparse.Namespace) -> int:
     analysis_dir = args.output_dir / "analysis" / "external"
     data_dir.mkdir(parents=True, exist_ok=True)
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    previous_sources = load_previous_source_manifest(analysis_dir / "sources_manifest.json") if args.offline else {}
 
     source_records: list[SourceRecord] = []
     source_records.append(
@@ -487,6 +570,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "Kroupova_2024_article.html",
             offline=args.offline,
+            previous=previous_sources.get("kroupova_article_html"),
         )
     )
     source_records.append(
@@ -496,6 +580,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "Kroupova_2024_Source_Data.xlsx",
             offline=args.offline,
+            previous=previous_sources.get("kroupova_source_data_xlsx"),
         )
     )
     source_records.append(
@@ -505,6 +590,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "Kroupova_2024_Supplementary_Data_1.zip",
             offline=args.offline,
+            previous=previous_sources.get("kroupova_supplementary_data_zip"),
         )
     )
     source_records.append(
@@ -514,6 +600,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "SASBDB_project_2221.html",
             offline=args.offline,
+            previous=previous_sources.get("sasbdb_project_2221_html"),
         )
     )
     source_records.append(
@@ -523,6 +610,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "SASBDB_help.html",
             offline=args.offline,
+            previous=previous_sources.get("sasbdb_help_html"),
         )
     )
     source_records.append(
@@ -532,6 +620,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_PMC12767645.html",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_pmc_html"),
         )
     )
     source_records.append(
@@ -541,6 +630,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_biorxiv.html",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_biorxiv_html"),
         )
     )
     source_records.append(
@@ -550,6 +640,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_biorxiv_supplement_tab.html",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_biorxiv_supplement_tab_html"),
         )
     )
     source_records.append(
@@ -559,6 +650,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_preprint.pdf",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_biorxiv_preprint_pdf"),
         )
     )
     source_records.append(
@@ -568,6 +660,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_pubmed_esummary.json",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_pubmed_esummary_json"),
         )
     )
     source_records.append(
@@ -577,6 +670,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_crossref.json",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_crossref_json"),
         )
     )
     source_records.append(
@@ -586,6 +680,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_europepmc.json",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_europepmc_json"),
         )
     )
     source_records.append(
@@ -595,6 +690,7 @@ def run(args: argparse.Namespace) -> int:
             data_dir,
             "OConnor_2025_media-1_supplement.pdf",
             offline=args.offline,
+            previous=previous_sources.get("oconnor_supplement_pdf"),
         )
     )
 
@@ -606,6 +702,7 @@ def run(args: argparse.Namespace) -> int:
                 data_dir,
                 f"{accession}.dat",
                 offline=args.offline,
+                previous=previous_sources.get(f"sasbdb_{accession}_dat"),
             )
         )
         source_records.append(
@@ -615,6 +712,7 @@ def run(args: argparse.Namespace) -> int:
                 data_dir,
                 f"{accession}.zip",
                 offline=args.offline,
+                previous=previous_sources.get(f"sasbdb_{accession}_zip"),
             )
         )
 
@@ -624,6 +722,7 @@ def run(args: argparse.Namespace) -> int:
                 f"pdb_{pdb_id.lower()}_cif",
                 f"https://files.rcsb.org/download/{pdb_id}.cif",
                 offline=args.offline,
+                previous=previous_sources.get(f"pdb_{pdb_id.lower()}_cif"),
             )
         )
     for emdb_id in OCONNOR_EMDB_IDS:
@@ -633,6 +732,7 @@ def run(args: argparse.Namespace) -> int:
                 f"emdb_{emdb_id.lower()}",
                 f"https://ftp.ebi.ac.uk/pub/databases/emdb/structures/EMD-{bare}/header/emd-{bare}.xml",
                 offline=args.offline,
+                previous=previous_sources.get(f"emdb_{emdb_id.lower()}"),
             )
         )
 

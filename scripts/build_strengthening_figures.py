@@ -16,9 +16,13 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
+import struct
 import sys
 import tempfile
+import zlib
+import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -129,6 +133,16 @@ DATA = ROOT / "data"
 MAIN_FIGURE_STEMS = ("Fig1", "Fig2", "Fig3", "Fig4", "Fig5")
 SUPPLEMENT_FIGURE_STEMS = ("FigS1", "FigS2", "FigS3", "FigS4", "FigS5", "FigS6")
 FIGURE_STEMS = (*MAIN_FIGURE_STEMS, *SUPPLEMENT_FIGURE_STEMS)
+MANIFEST_LIMITATION = "Structural package validation only; scientific claims are checked separately in the figure builder assertions."
+MEDIA_TYPES = {
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".npz": "application/octet-stream",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".py": "text/x-python",
+    ".svg": "image/svg+xml",
+}
 SUPPLEMENT_BUILDER_SCRIPTS = {"FigS1": "build_figS1.py", "FigS2": "build_figS2.py", "FigS3": "build_figS3.py"}
 CONTACT_CLASSES = ("CRBN_DDB1", "HB_TBD", "NTD_HB", "NTD_TBD")
 CONTACT_COLORS = {
@@ -189,6 +203,273 @@ def sha256_file(path: Path) -> str:
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def media_type(path: Path) -> str:
+    return MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def stable_file_state(path: Path) -> tuple[int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def local_xml_name(value: str) -> str:
+    return value.rsplit("}", 1)[-1]
+
+
+def png_structure(path: Path) -> dict[str, Any]:
+    allowed_critical = {b"IHDR", b"PLTE", b"IDAT", b"IEND"}
+    valid_depths = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
+    with path.open("rb") as handle:
+        if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+            raise NotReady(f"invalid PNG signature: {repo_rel(path)}")
+        width = height = color_type = None
+        seen_idat = False
+        idat_ended = False
+        seen_plte = False
+        chunk_count = 0
+        while True:
+            raw_length = handle.read(4)
+            if len(raw_length) != 4:
+                raise NotReady(f"truncated PNG before IEND: {repo_rel(path)}")
+            length = struct.unpack(">I", raw_length)[0]
+            chunk_type = handle.read(4)
+            if len(chunk_type) != 4 or not all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in chunk_type):
+                raise NotReady(f"invalid PNG chunk type: {repo_rel(path)}")
+            chunk_count += 1
+            if chunk_count == 1 and chunk_type != b"IHDR":
+                raise NotReady(f"PNG must start with IHDR: {repo_rel(path)}")
+            if chunk_type[0] <= 90 and chunk_type not in allowed_critical:
+                raise NotReady(f"unknown critical PNG chunk {chunk_type!r}: {repo_rel(path)}")
+
+            crc = zlib.crc32(chunk_type)
+            captured = bytearray()
+            remaining = length
+            while remaining:
+                block = handle.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise NotReady(f"truncated PNG chunk: {repo_rel(path)}")
+                if chunk_type == b"IHDR":
+                    captured.extend(block)
+                crc = zlib.crc32(block, crc)
+                remaining -= len(block)
+            raw_crc = handle.read(4)
+            if len(raw_crc) != 4 or struct.unpack(">I", raw_crc)[0] != crc & 0xFFFFFFFF:
+                raise NotReady(f"PNG CRC mismatch: {repo_rel(path)}")
+
+            if chunk_type == b"IHDR":
+                if chunk_count != 1 or length != 13:
+                    raise NotReady(f"invalid PNG IHDR: {repo_rel(path)}")
+                width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+                    ">IIBBBBB", bytes(captured)
+                )
+                if width <= 0 or height <= 0:
+                    raise NotReady(f"invalid PNG dimensions: {repo_rel(path)}")
+                if color_type not in valid_depths or bit_depth not in valid_depths[color_type]:
+                    raise NotReady(f"invalid PNG bit depth/color type: {repo_rel(path)}")
+                if compression != 0 or filtering != 0 or interlace not in (0, 1):
+                    raise NotReady(f"unsupported PNG compression/filter/interlace: {repo_rel(path)}")
+            elif chunk_type == b"PLTE":
+                if seen_plte or seen_idat or length == 0 or length % 3 or length > 768:
+                    raise NotReady(f"invalid PNG PLTE: {repo_rel(path)}")
+                seen_plte = True
+            elif chunk_type == b"IDAT":
+                if idat_ended:
+                    raise NotReady(f"non-contiguous PNG IDAT chunks: {repo_rel(path)}")
+                seen_idat = True
+            elif chunk_type == b"IEND":
+                if length != 0 or not seen_idat:
+                    raise NotReady(f"invalid PNG IEND or missing IDAT: {repo_rel(path)}")
+                if handle.read(1):
+                    raise NotReady(f"trailing bytes after PNG IEND: {repo_rel(path)}")
+                break
+            elif seen_idat:
+                idat_ended = True
+    if color_type == 3 and not seen_plte:
+        raise NotReady(f"indexed PNG missing PLTE: {repo_rel(path)}")
+    if color_type in (0, 4) and seen_plte:
+        raise NotReady(f"grayscale PNG contains PLTE: {repo_rel(path)}")
+    return {"png_width": width, "png_height": height}
+
+
+def pdf_structure(path: Path) -> dict[str, Any]:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        header = handle.read(8)
+        if not re.fullmatch(br"%PDF-(?:1\.[0-7]|2\.0)", header):
+            raise NotReady(f"invalid PDF header: {repo_rel(path)}")
+        handle.seek(max(0, size - 4096))
+        tail = handle.read()
+    marker = tail.rfind(b"%%EOF")
+    if marker < 0 or tail[marker + 5 :].strip(b"\x00\t\n\f\r "):
+        raise NotReady(f"invalid PDF EOF marker: {repo_rel(path)}")
+    return {"pdf_check": "header_and_eof"}
+
+
+def svg_reference_is_safe(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        not normalized
+        or normalized.startswith("#")
+        or normalized.startswith("data:image/png;base64,")
+        or normalized.startswith("data:image/jpeg;base64,")
+    )
+
+
+def svg_structure(path: Path) -> dict[str, Any]:
+    content = path.read_bytes()
+    lowered = content.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        raise NotReady(f"SVG DTD/entities are not allowed: {repo_rel(path)}")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise NotReady(f"invalid SVG XML: {repo_rel(path)}: {exc}") from exc
+    if local_xml_name(root.tag).lower() != "svg":
+        raise NotReady(f"invalid SVG root: {repo_rel(path)}")
+    blocked_elements = {"audio", "embed", "foreignobject", "iframe", "object", "script", "video"}
+    for element in root.iter():
+        name = local_xml_name(element.tag).lower()
+        if name in blocked_elements:
+            raise NotReady(f"active SVG element is not allowed: {name} in {repo_rel(path)}")
+        for attribute, value in element.attrib.items():
+            attr_name = local_xml_name(attribute).lower()
+            normalized = value.strip().lower()
+            if attr_name.startswith("on") or "javascript:" in normalized or "file://" in normalized:
+                raise NotReady(f"active or local SVG reference is not allowed: {repo_rel(path)}")
+            if attr_name in {"href", "src"} and not svg_reference_is_safe(value):
+                raise NotReady(f"external SVG reference is not allowed: {repo_rel(path)}")
+            for target in re.findall(r"url\(([^)]+)\)", value, flags=re.IGNORECASE):
+                if not svg_reference_is_safe(target.strip(" \t\"'")):
+                    raise NotReady(f"external SVG CSS reference is not allowed: {repo_rel(path)}")
+        if name == "style" and element.text:
+            style = element.text
+            if "@import" in style.lower() or "javascript:" in style.lower():
+                raise NotReady(f"active SVG style is not allowed: {repo_rel(path)}")
+            for target in re.findall(r"url\(([^)]+)\)", style, flags=re.IGNORECASE):
+                if not svg_reference_is_safe(target.strip(" \t\"'")):
+                    raise NotReady(f"external SVG style reference is not allowed: {repo_rel(path)}")
+    return {"svg_check": "parsed_no_active_content"}
+
+
+def delimited_structure(path: Path) -> dict[str, Any]:
+    delimiter = "," if path.suffix.lower() == ".csv" else "\t"
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
+        try:
+            header = next(reader)
+        except StopIteration as exc:
+            raise NotReady(f"empty delimited file: {repo_rel(path)}") from exc
+        if not header or any(not cell.strip() for cell in header):
+            raise NotReady(f"empty delimited header: {repo_rel(path)}")
+        columns = len(header)
+        rows = 0
+        for line_number, row in enumerate(reader, start=2):
+            if len(row) != columns:
+                raise NotReady(f"inconsistent delimited columns on row {line_number}: {repo_rel(path)}")
+            rows += 1
+    return {"table": {"rows": rows, "columns": columns, "header": header}}
+
+
+def structural_metadata(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise NotReady(f"symlink files are not portable package records: {repo_rel(path)}")
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise NotReady(f"missing, non-file, or empty package file: {repo_rel(path)}")
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        return png_structure(path)
+    if suffix == ".pdf":
+        return pdf_structure(path)
+    if suffix == ".svg":
+        return svg_structure(path)
+    if suffix in {".csv", ".tsv"}:
+        return delimited_structure(path)
+    return {}
+
+
+def package_file_record(path_text: str) -> dict[str, Any]:
+    path = ROOT / path_text if not os.path.isabs(path_text) else Path(path_text)
+    before = stable_file_state(path)
+    extra = structural_metadata(path)
+    digest = sha256_file(path)
+    after = stable_file_state(path)
+    if before != after:
+        raise NotReady(f"package file changed during structural validation: {repo_rel(path)}")
+    return {"path": repo_rel(path), "bytes": after[2], "sha256": digest, "media_type": media_type(path), **extra}
+
+
+def figure_manifest_command(record: Mapping[str, Any], ctx: BuildContext) -> str:
+    parts = ["python", "scripts/build_strengthening_figures.py", "--input-root", repo_rel(ctx.input_root)]
+    if ctx.output_dir != ctx.input_root / "manuscript" / "figures":
+        parts.extend(["--output-dir", repo_rel(ctx.output_dir)])
+    if ctx.source_dir != ctx.input_root / "analysis" / "figure_sources":
+        parts.extend(["--source-dir", repo_rel(ctx.source_dir)])
+    if ctx.require_all:
+        parts.append("--require-all")
+    return " ".join(parts) + f"  # emits {record['figure']}_package_manifest.json"
+
+
+def build_figure_package_manifest(
+    record: Mapping[str, Any], ctx: BuildContext, *, generated_at: str | None = None
+) -> Path | None:
+    if not str(record.get("status", "")).startswith("rendered"):
+        return None
+    figure = str(record["figure"])
+    outputs = record.get("outputs", {})
+    if not isinstance(outputs, Mapping) or not outputs:
+        raise NotReady(f"{figure} has no output records for package manifest")
+    output_paths = [outputs[key] for key in ("png", "pdf", "svg") if key in outputs]
+    if len(output_paths) != 3:
+        raise NotReady(f"{figure} package manifest requires PNG, PDF, and SVG outputs")
+    source_data = record.get("source_data")
+    if not isinstance(source_data, str) or not source_data:
+        raise NotReady(f"{figure} has no source_data record for package manifest")
+    input_paths = [str(value) for value in record.get("inputs", [])]
+    if not input_paths:
+        raise NotReady(f"{figure} has no input records for package manifest")
+    provenance = record.get("provenance")
+    if isinstance(provenance, str) and provenance:
+        input_paths.append(provenance)
+    panel_mapping = record.get("panel_mapping", {})
+    panel_claims = [f"{panel}: {description}" for panel, description in panel_mapping.items()]
+    if not panel_claims:
+        panel_claims = [f"source: {figure} rebuilt from existing scientific supplemental builder"]
+    manifest = {
+        "schema_version": "1.0",
+        "profile": "publication",
+        "figure_id": figure,
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
+        "base_dir": os.path.relpath(str(ROOT), str(ctx.source_dir.resolve())),
+        "script": package_file_record("scripts/build_strengthening_figures.py"),
+        "inputs": [package_file_record(path) for path in dict.fromkeys(input_paths)],
+        "outputs": [package_file_record(path) for path in output_paths],
+        "source_data": [package_file_record(source_data)],
+        "panel_claims": panel_claims,
+        "transformations": [],
+        "known_limitations": [MANIFEST_LIMITATION],
+        "validation": {
+            "status": "structural_pass",
+            "scientific_validation": "not_assessed",
+            "commands": [figure_manifest_command(record, ctx)],
+        },
+    }
+    manifest_path = ctx.source_dir / f"{figure}_package_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    return manifest_path
+
+
+def package_manifests(
+    records: Sequence[Mapping[str, Any]], ctx: BuildContext, *, generated_at: str | None = None
+) -> list[Path]:
+    manifests: list[Path] = []
+    for record in records:
+        path = build_figure_package_manifest(record, ctx, generated_at=generated_at)
+        if path is not None:
+            manifests.append(path)
+    return manifests
 
 
 def repo_rel(path: Path) -> str:
@@ -2102,9 +2383,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest = source_manifest(records, ctx)
     legends = write_legends(records, ctx)
     readiness = write_readiness(records, ctx)
+    package_manifest_paths = package_manifests(records, ctx)
     print(f"manifest: {repo_rel(manifest)}")
     print(f"legends: {repo_rel(legends)}")
     print(f"readiness: {repo_rel(readiness)}")
+    print(f"package_manifests: {len(package_manifest_paths)}")
     complete = all(
         str(record.get("status", "")).startswith("rendered")
         for record in records

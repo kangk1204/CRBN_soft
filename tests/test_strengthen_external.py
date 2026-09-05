@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from scripts import strengthen_external
 
@@ -131,3 +134,95 @@ def test_offline_run_reports_missing_sources_without_candidate_comparison(tmp_pa
         missing = list(csv.DictReader(handle))
     assert any(row["source_id"] == "oconnor_machine_readable_source_tables" for row in missing)
     assert any(row["source_id"] == "sasbdb_SASDU52_dat" for row in missing)
+
+
+def test_offline_run_preserves_previous_availability_snapshot(tmp_path: Path, monkeypatch) -> None:
+    out = tmp_path / "run"
+    analysis_dir = out / "analysis" / "external"
+    data_dir = out / "data" / "external"
+    analysis_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    cached_html = b"<html>cached</html>"
+    (data_dir / "Kroupova_2024_article.html").write_bytes(cached_html)
+    previous_manifest = [
+        {
+            "source_id": "kroupova_article_html",
+            "url": strengthen_external.KROUPOVA_ARTICLE,
+            "local_path": "/old/Kroupova_2024_article.html",
+            "retrieved_utc": "2026-09-05T00:00:00Z",
+            "status": "http_200",
+            "bytes": len(cached_html),
+            "sha256": hashlib.sha256(cached_html).hexdigest(),
+            "error": None,
+        },
+        {
+            "source_id": "pdb_9sun_cif",
+            "url": "https://files.rcsb.org/download/9SUN.cif",
+            "local_path": None,
+            "retrieved_utc": "2026-09-05T00:00:00Z",
+            "status": "http_404",
+            "bytes": None,
+            "sha256": None,
+            "error": "HTTP 404",
+        },
+    ]
+    (analysis_dir / "sources_manifest.json").write_text(json.dumps(previous_manifest), encoding="utf-8")
+    window = tmp_path / "crbn_residue_window.csv"
+    residues = list(range(100, 368)) + [378]
+    window.write_text(
+        "index,author_resnum\n" + "".join(f"{i},{residue}\n" for i, residue in enumerate(residues)),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(strengthen_external, "PRIMARY_WINDOW_PATH", window)
+
+    args = argparse.Namespace(output_dir=out, offline=True, max_qrg=1.3)
+    assert strengthen_external.run(args) == 0
+
+    manifest = {
+        row["source_id"]: row
+        for row in json.loads((analysis_dir / "sources_manifest.json").read_text())
+    }
+    assert manifest["pdb_9sun_cif"]["status"] == "http_404"
+    assert manifest["pdb_9sun_cif"]["retrieved_utc"] == "2026-09-05T00:00:00Z"
+    assert manifest["pdb_9sun_cif"]["current_run_status"] == "not_checked_offline"
+    assert manifest["kroupova_article_html"]["status"] == "http_200"
+    assert manifest["kroupova_article_html"]["current_run_status"] == "cached"
+
+    with (analysis_dir / "missing_files_report.csv").open() as handle:
+        missing = list(csv.DictReader(handle))
+    pdb_row = next(row for row in missing if row["source_id"] == "pdb_9sun_cif")
+    assert pdb_row["reason"] == "HTTP 404"
+
+
+def test_offline_run_rejects_tampered_cached_file(tmp_path: Path, monkeypatch) -> None:
+    out = tmp_path / "run"
+    analysis_dir = out / "analysis" / "external"
+    data_dir = out / "data" / "external"
+    analysis_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    original_html = b"<html>original</html>"
+    (data_dir / "Kroupova_2024_article.html").write_text("<html>tampered</html>", encoding="utf-8")
+    previous_manifest = [
+        {
+            "source_id": "kroupova_article_html",
+            "url": strengthen_external.KROUPOVA_ARTICLE,
+            "local_path": "/old/Kroupova_2024_article.html",
+            "retrieved_utc": "2026-09-05T00:00:00Z",
+            "status": "http_200",
+            "bytes": len(original_html),
+            "sha256": hashlib.sha256(original_html).hexdigest(),
+            "error": None,
+        },
+    ]
+    (analysis_dir / "sources_manifest.json").write_text(json.dumps(previous_manifest), encoding="utf-8")
+    window = tmp_path / "crbn_residue_window.csv"
+    residues = list(range(100, 368)) + [378]
+    window.write_text(
+        "index,author_resnum\n" + "".join(f"{i},{residue}\n" for i, residue in enumerate(residues)),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(strengthen_external, "PRIMARY_WINDOW_PATH", window)
+
+    args = argparse.Namespace(output_dir=out, offline=True, max_qrg=1.3)
+    with pytest.raises(RuntimeError, match="cached source kroupova_article_html differs from frozen manifest"):
+        strengthen_external.run(args)

@@ -74,6 +74,9 @@ SENSITIVITY_CUTOFFS = (13.0, 18.0)
 DEFAULT_ALPHAS = (0.0, 0.5, 1.0, 2.0)
 NEAR_DEGENERATE_RATIO = 1.20
 ZERO_TOL = 1e-9
+SPARSE_EIGEN_SHIFT = -1e-4
+SPARSE_EIGEN_TOL = 1e-10
+SPARSE_RESIDUAL_TOL = 1e-7
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -245,6 +248,22 @@ def slow_modes(hessian: np.ndarray, n_modes: int) -> tuple[np.ndarray, np.ndarra
         hi = min(dim - 1, max(2 * hi + 1, hi + n_modes + 24))
 
 
+def deterministic_start_vector(dim: int) -> np.ndarray:
+    """Return a fixed nonzero start vector for ARPACK iterations."""
+
+    vector = np.sin(np.arange(dim, dtype=float) + 1.0)
+    return vector / np.linalg.norm(vector)
+
+
+def eigenpair_residuals(
+    hessian: sparse.spmatrix | np.ndarray,
+    values: np.ndarray,
+    vectors: np.ndarray,
+) -> np.ndarray:
+    residual = hessian @ vectors - vectors * values
+    return np.linalg.norm(residual, axis=0) / np.maximum(1.0, np.abs(values))
+
+
 def slow_modes_sparse(hessian: sparse.spmatrix, n_modes: int, rigid_modes: int) -> tuple[np.ndarray, np.ndarray]:
     dim = hessian.shape[0]
     request = min(dim - 2, n_modes + rigid_modes + 12)
@@ -252,17 +271,43 @@ def slow_modes_sparse(hessian: sparse.spmatrix, n_modes: int, rigid_modes: int) 
         values, vectors = eigsh(
             hessian,
             k=request,
-            sigma=1e-8,
+            sigma=SPARSE_EIGEN_SHIFT,
             which="LM",
-            tol=1e-7,
-            maxiter=max(2000, dim * 2),
+            tol=SPARSE_EIGEN_TOL,
+            maxiter=max(6000, dim * 4),
+            v0=deterministic_start_vector(dim),
         )
         order = np.argsort(values)
         values = values[order]
         vectors = vectors[:, order]
         keep = values > ZERO_TOL
         if int(keep.sum()) >= n_modes or request >= dim - 2:
-            return values[keep][:n_modes], vectors[:, keep][:, :n_modes]
+            values = values[keep][:n_modes]
+            vectors = vectors[:, keep][:, :n_modes]
+            residuals = eigenpair_residuals(hessian, values, vectors)
+            if float(residuals.max(initial=0.0)) > SPARSE_RESIDUAL_TOL:
+                values, vectors = eigsh(
+                    hessian,
+                    k=request,
+                    sigma=10.0 * SPARSE_EIGEN_SHIFT,
+                    which="LM",
+                    tol=SPARSE_EIGEN_TOL,
+                    maxiter=max(8000, dim * 6),
+                    v0=deterministic_start_vector(dim),
+                )
+                order = np.argsort(values)
+                values = values[order]
+                vectors = vectors[:, order]
+                keep = values > ZERO_TOL
+                values = values[keep][:n_modes]
+                vectors = vectors[:, keep][:, :n_modes]
+                residuals = eigenpair_residuals(hessian, values, vectors)
+                if float(residuals.max(initial=0.0)) > SPARSE_RESIDUAL_TOL:
+                    raise RuntimeError(
+                        "sparse slow-mode solver did not converge to residual "
+                        f"{SPARSE_RESIDUAL_TOL:g}; max residual {float(residuals.max()):.3g}"
+                    )
+            return values, vectors
         request = min(dim - 2, request + n_modes + 12)
 
 

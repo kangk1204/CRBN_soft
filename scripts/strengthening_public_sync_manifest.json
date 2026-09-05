@@ -1,7 +1,7 @@
 {
-  "generated_at_utc": "2026-09-05T03:56:00.195861+00:00",
+  "generated_at_utc": "2026-09-05T04:32:18.586173+00:00",
   "scope": "CSBJ strengthening public analysis-code synchronization",
-  "note": "All 19 listed analysis/config/test/figure files are source-identical between the private strengthening revision and public code.",
+  "note": "All 20 listed analysis/config/test/figure files are source-identical between the private strengthening revision and public code.",
   "files": [
     {
       "path": "scripts/strengthen_ensemble.py",
@@ -13,10 +13,10 @@
     },
     {
       "path": "scripts/strengthen_ddb1.py",
-      "source_sha256": "ef277c81863983eaa525201c3496d4fde478c3b4a6b1d309997f275560fe3b00",
-      "source_bytes": 44833,
-      "public_sha256": "ef277c81863983eaa525201c3496d4fde478c3b4a6b1d309997f275560fe3b00",
-      "public_bytes": 44833,
+      "source_sha256": "5afc18c8b969ee5d9131cf5f9f870a3d6e95e344ae34b9ae601906b65db98f4c",
+      "source_bytes": 46685,
+      "public_sha256": "5afc18c8b969ee5d9131cf5f9f870a3d6e95e344ae34b9ae601906b65db98f4c",
+      "public_bytes": 46685,
       "public_matches_source": true
     },
     {
@@ -37,10 +37,10 @@
     },
     {
       "path": "scripts/strengthen_external.py",
-      "source_sha256": "b05f222c068f1dd8063dce03b435717af3036930d265971463a9375ae65d5c86",
-      "source_bytes": 58282,
-      "public_sha256": "b05f222c068f1dd8063dce03b435717af3036930d265971463a9375ae65d5c86",
-      "public_bytes": 58282,
+      "source_sha256": "e7633e965b7580bcd564d74ef6ec10838e2d14dc74946c35b15f5e7f890fc1bc",
+      "source_bytes": 62476,
+      "public_sha256": "e7633e965b7580bcd564d74ef6ec10838e2d14dc74946c35b15f5e7f890fc1bc",
+      "public_bytes": 62476,
       "public_matches_source": true
     },
     {
@@ -85,10 +85,10 @@
     },
     {
       "path": "tests/test_strengthen_ddb1.py",
-      "source_sha256": "cab1ec3535279ace79f3da57ab9841807d108c6a38db051b90d8c69a2ec66ab7",
-      "source_bytes": 6006,
-      "public_sha256": "cab1ec3535279ace79f3da57ab9841807d108c6a38db051b90d8c69a2ec66ab7",
-      "public_bytes": 6006,
+      "source_sha256": "928b0e538242748a22f87cfa9be8b2367d1c4ecc80a41117aa2e9b76a7e8d55c",
+      "source_bytes": 7725,
+      "public_sha256": "928b0e538242748a22f87cfa9be8b2367d1c4ecc80a41117aa2e9b76a7e8d55c",
+      "public_bytes": 7725,
       "public_matches_source": true
     },
     {
@@ -109,10 +109,10 @@
     },
     {
       "path": "tests/test_strengthen_external.py",
-      "source_sha256": "54fc30ebcc808cdd07935c6cc42325d3c25e9dff9bd90f12b3da9545846e0e8c",
-      "source_bytes": 5441,
-      "public_sha256": "54fc30ebcc808cdd07935c6cc42325d3c25e9dff9bd90f12b3da9545846e0e8c",
-      "public_bytes": 5441,
+      "source_sha256": "049f55942754675b931c98b0a0c39fdd07a7d523c6ed7b5b24fb5f611678b340",
+      "source_bytes": 9474,
+      "public_sha256": "049f55942754675b931c98b0a0c39fdd07a7d523c6ed7b5b24fb5f611678b340",
+      "public_bytes": 9474,
       "public_matches_source": true
     },
     {
@@ -149,10 +149,18 @@
     },
     {
       "path": "scripts/build_strengthening_figures.py",
-      "source_sha256": "f43873b11bb1bdefa072843de5afbc513f810808882679b510a75df3a6cc3c8f",
-      "public_sha256": "f43873b11bb1bdefa072843de5afbc513f810808882679b510a75df3a6cc3c8f",
-      "source_bytes": 104326,
-      "public_bytes": 104326,
+      "source_sha256": "ce203e731da44398ab721456456d5ba8506ffee6d40e13ef4f3c67895fa662a5",
+      "source_bytes": 117717,
+      "public_sha256": "ce203e731da44398ab721456456d5ba8506ffee6d40e13ef4f3c67895fa662a5",
+      "public_bytes": 117717,
+      "public_matches_source": true
+    },
+    {
+      "path": "tests/test_strengthening_figure_manifest.py",
+      "source_sha256": "88d46839aa9aecb14f4f3e642c9293aecb2c37a789d7b531c9d11c5fc32ed30e",
+      "source_bytes": 7740,
+      "public_sha256": "88d46839aa9aecb14f4f3e642c9293aecb2c37a789d7b531c9d11c5fc32ed30e",
+      "public_bytes": 7740,
       "public_matches_source": true
     }
   ]
