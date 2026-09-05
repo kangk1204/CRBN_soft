@@ -387,9 +387,13 @@ def test_chimerax_plan_d_assets_are_ready_without_running_license_gated_binary(t
     config = json.loads((analysis_root / "chimerax_plan_d_config.json").read_text())
     runner = (analysis_root / "chimerax_plan_d_runner.py").read_text(encoding="utf-8")
     cxc = (analysis_root / "run_chimerax_plan_d.cxc").read_text(encoding="utf-8")
+    launcher = (analysis_root / "run_chimerax_plan_d.py").read_text(encoding="utf-8")
 
     assert "crbnpland" in cxc
     assert "chimerax_plan_d_config.json" in cxc
+    assert str(tmp_path) not in cxc
+    assert "run_chimerax_plan_d.py" in cxc
+    assert "_runtime_cxc(asset_dir)" in launcher
     assert len(config["fit_entries"]) == 3
     assert "train_map," in runner
     assert "heldout_map," in runner
@@ -405,6 +409,34 @@ def test_chimerax_plan_d_assets_are_ready_without_running_license_gated_binary(t
     assert "_269ca.json" in runner
     assert "ANM" not in runner
     assert "alignment_reference" in runner
+
+
+def test_chimerax_launcher_writes_runtime_cxc_from_its_own_directory(tmp_path):
+    module = load_module()
+    point_module_at_refs(module, write_synthetic_plan_d_refs(tmp_path))
+    output_root = tmp_path / "portable output with spaces"
+    analysis_root = output_root / "analysis" / "maps"
+    analysis_root.mkdir(parents=True)
+    module.write_chimerax_assets(output_root, analysis_root)
+
+    spec = importlib.util.spec_from_file_location(
+        "run_chimerax_plan_d_test",
+        analysis_root / "run_chimerax_plan_d.py",
+    )
+    assert spec is not None and spec.loader is not None
+    launcher = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = launcher
+    spec.loader.exec_module(launcher)
+
+    runtime_cxc = launcher._runtime_cxc(analysis_root)
+    try:
+        payload = runtime_cxc.read_text(encoding="utf-8")
+    finally:
+        runtime_cxc.unlink(missing_ok=True)
+
+    assert f'open "{analysis_root / "chimerax_plan_d_runner.py"}"' in payload
+    assert f'crbnpland "{analysis_root / "chimerax_plan_d_config.json"}"' in payload
+    assert f'log save "{analysis_root / "chimerax_plan_d_log.html"}"' in payload
 
 
 
