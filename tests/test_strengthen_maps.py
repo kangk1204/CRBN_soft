@@ -276,14 +276,57 @@ def write_synthetic_plan_d_refs(tmp_path):
             )
         path.write_text("\n".join([*lines, "TER", "END"]) + "\n", encoding="utf-8")
 
+    def cif_gz(path, shift):
+        headers = [
+            "_atom_site.group_PDB",
+            "_atom_site.id",
+            "_atom_site.type_symbol",
+            "_atom_site.label_atom_id",
+            "_atom_site.label_alt_id",
+            "_atom_site.label_comp_id",
+            "_atom_site.label_asym_id",
+            "_atom_site.label_entity_id",
+            "_atom_site.label_seq_id",
+            "_atom_site.pdbx_PDB_ins_code",
+            "_atom_site.Cartn_x",
+            "_atom_site.Cartn_y",
+            "_atom_site.Cartn_z",
+            "_atom_site.occupancy",
+            "_atom_site.B_iso_or_equiv",
+            "_atom_site.pdbx_formal_charge",
+            "_atom_site.auth_seq_id",
+            "_atom_site.auth_comp_id",
+            "_atom_site.auth_asym_id",
+            "_atom_site.auth_atom_id",
+            "_atom_site.pdbx_PDB_model_num",
+        ]
+        rows = []
+        serial = 1
+        offsets = {"N": np.array([-0.25, 0.0, 0.0]), "CA": np.zeros(3), "C": np.array([0.25, 0.0, 0.0])}
+        for label_seq, (resnum, xyz) in enumerate(zip(residues, mean + shift), start=1):
+            for atom_name, atom_offset in offsets.items():
+                pos = xyz + atom_offset
+                rows.append(
+                    f"ATOM {serial} C {atom_name} . ALA B 1 {label_seq} ? "
+                    f"{pos[0]:.3f} {pos[1]:.3f} {pos[2]:.3f} 1.00 0.00 ? "
+                    f"{resnum} ALA B {atom_name} 1"
+                )
+                serial += 1
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            handle.write("data_synthetic\n#\nloop_\n" + "\n".join(headers) + "\n" + "\n".join(rows) + "\n#\n")
+
     pdb(refs / "open_8cvp_assembly.pdb", np.array([0.0, 0.0, 0.0]))
     pdb(refs / "closed_5fqd.pdb", np.array([0.2, 0.1, 0.0]))
+    cif_gz(refs / "open_8cvp.cif.gz", np.array([0.0, 0.0, 0.0]))
+    cif_gz(refs / "closed_5fqd.cif.gz", np.array([0.2, 0.1, 0.0]))
     return {
         "window": window,
         "pca": refs / "crbn_pca.npz",
         "modes": refs / "crbn_anm_modes.npz",
         "open": refs / "open_8cvp_assembly.pdb",
         "closed": refs / "closed_5fqd.pdb",
+        "fit_open": refs / "open_8cvp.cif.gz",
+        "fit_closed": refs / "closed_5fqd.cif.gz",
     }
 
 
@@ -294,6 +337,10 @@ def point_module_at_refs(module, refs):
     module.PLAN_D_TEMPLATES = {
         "open_8cvp_crbn": refs["open"],
         "closed_5fqd_crbn": refs["closed"],
+    }
+    module.PLAN_D_FIT_TEMPLATES = {
+        "open_8cvp_crbn": refs["fit_open"],
+        "closed_5fqd_crbn": refs["fit_closed"],
     }
 
 
@@ -316,7 +363,10 @@ def test_plan_d_config_covers_domain_halfmap_fit_and_stability_contract(tmp_path
     assert config["stability_gate"] == {
         "relative_orientation_max_deg": 10.0,
         "normalized_structural_coordinate_max_abs_delta": 0.1,
+        "expected_completed_fits_per_state": 4,
     }
+    assert config["fit_templates"]["open_8cvp_crbn"].endswith("open_8cvp.cif.gz")
+    assert config["fit_templates"]["closed_5fqd_crbn"].endswith("closed_5fqd.cif.gz")
     for entry in config["fit_entries"]:
         assert entry["half_maps"]["A"].endswith("half_map_1.map.gz")
         assert entry["half_maps"]["B"].endswith("half_map_2.map.gz")
@@ -349,11 +399,12 @@ def test_chimerax_plan_d_assets_are_ready_without_running_license_gated_binary(t
     assert "shift=False" in runner
     assert "rotate=False" in runner
     assert "metric='correlation'" in runner
-    assert "_rotation_angle_deg(domain_rotations['NTD+HB'], domain_rotations['TBD'])" in runner
+    assert "_relative_orientation_in_common_frame(" in runner
+    assert "relative_orientation_matrix" in runner
     assert "normalized_structural_coordinate" in runner
     assert "_269ca.json" in runner
     assert "ANM" not in runner
-    assert "PCA" not in runner
+    assert "alignment_reference" in runner
 
 
 
@@ -366,6 +417,10 @@ def test_chimerax_assets_record_missing_reference_inputs_without_runtime_ready_c
     module.PLAN_D_TEMPLATES = {
         "open_8cvp_crbn": missing / "open_8cvp_assembly.pdb",
         "closed_5fqd_crbn": missing / "closed_5fqd.pdb",
+    }
+    module.PLAN_D_FIT_TEMPLATES = {
+        "open_8cvp_crbn": missing / "open_8cvp.cif.gz",
+        "closed_5fqd_crbn": missing / "closed_5fqd.cif.gz",
     }
     output_root = tmp_path / "public_checkout"
     analysis_root = output_root / "analysis" / "maps"
@@ -382,6 +437,8 @@ def test_chimerax_assets_record_missing_reference_inputs_without_runtime_ready_c
         "crbn_anm_modes.npz",
         "open_8cvp_assembly.pdb",
         "closed_5fqd.pdb",
+        "open_8cvp.cif.gz",
+        "closed_5fqd.cif.gz",
     }
     assert "reference_inputs_available is true" in install_note
 
@@ -412,6 +469,12 @@ def rotation_z(degrees: float) -> np.ndarray:
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
+def rotation_x(degrees: float) -> np.ndarray:
+    radians = np.deg2rad(degrees)
+    c, s = np.cos(radians), np.sin(radians)
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+
 def test_plan_d_state_stability_is_computed_within_state_not_across_states(tmp_path):
     runner, _config = load_generated_runner(tmp_path)
     rows = []
@@ -430,6 +493,7 @@ def test_plan_d_state_stability_is_computed_within_state_not_across_states(tmp_p
         {
             "relative_orientation_max_deg": 10.0,
             "normalized_structural_coordinate_max_abs_delta": 0.1,
+            "expected_completed_fits_per_state": 4,
         },
     )
 
@@ -437,6 +501,64 @@ def test_plan_d_state_stability_is_computed_within_state_not_across_states(tmp_p
     assert stability["closed"]["state_gate_pass"]
     assert stability["open"]["relative_orientation_range_deg"] == pytest.approx(3.0)
     assert stability["closed"]["relative_orientation_range_deg"] == pytest.approx(3.0)
+
+
+def test_plan_d_state_stability_uses_so3_pairwise_orientation_not_scalar_angle(tmp_path):
+    runner, _config = load_generated_runner(tmp_path)
+    rows = []
+    for matrix in [np.eye(3), rotation_x(12.0), rotation_z(12.0), rotation_x(-12.0)]:
+        rows.append(
+            {
+                "state": "open",
+                "fit_status": "completed",
+                "relative_orientation_deg": 12.0,
+                "relative_orientation_matrix": matrix.tolist(),
+                "normalized_structural_coordinate": 0.01,
+            }
+        )
+
+    stability = runner._state_stability(
+        rows,
+        {
+            "relative_orientation_max_deg": 10.0,
+            "normalized_structural_coordinate_max_abs_delta": 0.1,
+            "expected_completed_fits_per_state": 4,
+        },
+    )
+
+    assert not stability["open"]["state_gate_pass"]
+    assert not stability["open"]["relative_orientation_pass"]
+    assert stability["open"]["orientation_stability_metric"] == "max_pairwise_so3_geodesic_deg"
+    assert stability["open"]["relative_orientation_range_deg"] > 10.0
+
+
+def test_plan_d_state_stability_rejects_incomplete_state_fits(tmp_path):
+    runner, _config = load_generated_runner(tmp_path)
+    rows = [
+        {
+            "state": "open",
+            "fit_status": "completed",
+            "relative_orientation_deg": 1.0,
+            "normalized_structural_coordinate": 0.01,
+        },
+        {
+            "state": "open",
+            "fit_status": "no_retained_fit",
+        },
+    ]
+
+    stability = runner._state_stability(
+        rows,
+        {
+            "relative_orientation_max_deg": 10.0,
+            "normalized_structural_coordinate_max_abs_delta": 0.1,
+            "expected_completed_fits_per_state": 4,
+        },
+    )
+
+    assert not stability["open"]["state_gate_pass"]
+    assert stability["open"]["incomplete_fit_gate"]
+    assert stability["open"]["n_completed_fits"] == 1
 
 
 def test_coordinate_and_domain_orientation_are_invariant_to_global_template_rotation(tmp_path):
@@ -496,5 +618,49 @@ def test_postfit_projection_reports_mode1_and_low_frequency_basis(tmp_path):
     result = runner._postfit_projection(displacement, mode1, low_basis, coords, domain_indices)
 
     assert result["mode1_abs_cosine"] == pytest.approx(2 ** -0.5)
-    assert result["low_frequency_subspace_fraction"] == pytest.approx(1.0)
-    assert result["rigid_two_domain_subspace_fraction"] == pytest.approx(1.0)
+    assert result["low_frequency_subspace_projection_norm"] == pytest.approx(1.0)
+    assert result["rigid_two_domain_subspace_projection_norm"] == pytest.approx(1.0)
+
+
+def test_plan_d_existing_output_is_not_overwritten(tmp_path):
+    module = load_module()
+    namespace = {'__name__': 'test_generated_runner'}
+    exec(compile(module.CHIMERAX_PLAN_D_RUNNER, '<runner>', 'exec'), namespace)
+    (tmp_path / 'chimerax_plan_d').mkdir()
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'repository_root': str(tmp_path)}))
+    with pytest.raises(FileExistsError):
+        namespace['run_plan_d'](None, str(config))
+
+
+def test_plan_d_summary_rejects_duplicate_and_partial_runs():
+    spec = importlib.util.spec_from_file_location('plan_d_export', ROOT/'scripts/summarize_chimerax_plan_d.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = {'fit_entries': [{'emdb_id': 'EMD-1', 'state': 'open'}],
+              'templates': {'t': 'pdb'}, 'train_heldout_pairs': [{'train': 'A', 'heldout': 'B'}],
+              'domains': {'body': [1, 2]}, 'seed': 1, 'search_placements': 100}
+    row = {'emdb_id': 'EMD-1', 'state': 'open', 'template': 't', 'train_half': 'A',
+           'heldout_half': 'B', 'domain_metrics': {'body': {}}}
+    summary = {'results': [row], 'seed': 1, 'search_placements': 100, 'state_stability': {'open': {}}}
+    module.validate_execution(summary, config)
+    for rows in ([], [row, row]):
+        with pytest.raises(ValueError, match='identities'):
+            module.validate_execution({**summary, 'results': rows}, config)
+
+
+def test_nonzero_relative_orientation_is_global_frame_invariant(tmp_path):
+    runner, _config = load_generated_runner(tmp_path)
+    rng = np.random.default_rng(37)
+    mean = rng.normal(size=(20, 3))
+    mean[10:] += np.array([4, 1, 0])
+    indices = {'NTD+HB': np.arange(10), 'TBD': np.arange(10, 20)}
+    fitted = mean.copy()
+    fitted[10:] = fitted[10:] @ rotation_z(48.0) + [2, -3, 1]
+    angle, matrix, aligned = runner._relative_orientation_in_common_frame(fitted, mean, indices)
+    moved = fitted @ rotation_z(73.0) + [17, -8, 4]
+    angle2, matrix2, aligned2 = runner._relative_orientation_in_common_frame(moved, mean, indices)
+    assert angle == pytest.approx(48.0, abs=1e-10)
+    assert angle2 == pytest.approx(angle, abs=1e-10)
+    np.testing.assert_allclose(matrix2, matrix, atol=1e-12)
+    np.testing.assert_allclose(aligned2, aligned, atol=1e-12)

@@ -231,6 +231,37 @@ EMDB artifacts, `logs/` for `run_strengthening.py` stage logs,
 `manuscript/figures/` for rendered strengthening figures, and
 `analysis/figure_sources/` for figure source data and manifests.
 
+## Execute the cryo-EM domain-fitting stage
+
+With ChimeraX installed and the archived raw maps and coordinate caches staged,
+regenerate the portable fitting assets and execute them separately:
+
+```bash
+python scripts/strengthen_maps.py --offline --output-dir results/strengthening --download-ids 70776 70777 70778 70781 70782 70783 70784
+ChimeraX --nogui --exit --cmd "open results/strengthening/analysis/maps/chimerax_plan_d_runner.py; crbnpland results/strengthening/analysis/maps/chimerax_plan_d_config.json"
+python scripts/summarize_chimerax_plan_d.py --analysis-dir results/strengthening/analysis/maps --plot
+python scripts/verify_chimerax_execution.py --analysis-dir results/strengthening/analysis/maps
+```
+
+On macOS the executable can be inside `ChimeraX-1.12.app/Contents/MacOS/`.
+The runner uses observed heavy atoms from cached 8CVP and 5FQD mmCIF files for
+map fitting, while scoring the unchanged 269 C-alpha positions. It uses 100
+seeded placements per domain and fits each half-map in turn. The held-out,
+consensus and focused maps are scored at the selected pose without further
+optimization. All retained search clusters and unsuccessful searches are saved.
+Stability requires all four template/half-map combinations per state and compares
+relative rotation matrices in a common coordinate frame. Output is written beside
+the supplied configuration, so relocating a data bundle cannot write into its
+original checkout. An existing fit output directory is rejected to prevent
+concurrent runs or accidental replacement; use a fresh directory for a rerun.
+
+The summary command exports every domain score, fitted-structure coordinate and
+state decision. Its diagnostic image contains maximum-density projections, not
+local-resolution estimates. Failure of the fitting procedure does not establish
+poor experimental map resolution or disprove the deposited state. Passing a
+stability rule alone also does not establish correct local density assignment.
+Fitted coordinates must always be identified as fitted models.
+
 ## Score another CRBN structure
 
 With the matching input bundle in `data/`, project a local mmCIF structure onto
