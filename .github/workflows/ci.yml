@@ -21,7 +21,7 @@ jobs:
       - name: Install check dependencies
         run: >-
           python -m pip install
-          numpy==2.4.6 scipy==1.17.1 matplotlib==3.11.0 pillow==12.3.0
+          numpy==2.4.6 scipy==1.17.1 pandas==2.3.3 matplotlib==3.11.0 pillow==12.3.0
           pytest==9.1.1 ruff==0.16.3 cffconvert==2.0.0
       - name: Compile
         run: python -m compileall -q scripts tests
