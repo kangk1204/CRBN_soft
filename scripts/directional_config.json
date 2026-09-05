@@ -1,0 +1,73 @@
+{
+  "protocol_version": "1.0.0",
+  "frozen_date": "2026-09-06",
+  "seed": 20260906,
+  "references": ["8CVP", "8D7X", "8D7Y", "6H0F", "7U8F"],
+  "apo_references": ["8CVP", "8D7X", "8D7Y"],
+  "engineered_references": ["6H0F", "7U8F"],
+  "crbn_position_count": 269,
+  "primary_cutoff_A": 15.0,
+  "cutoffs_A": [15.0, 13.0, 18.0],
+  "weightings": ["uniform", "inverse_square"],
+  "inverse_square_reference_distance_A": 15.0,
+  "models": ["isolated", "fixed", "rigid", "flexible"],
+  "target": "Frozen 70-conformer mean-open minus mean-closed displacement, projected and normalized in each reference CRBN internal coordinate space; fixed during perturbation.",
+  "interface_strengths": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0],
+  "primary_mode_count": 20,
+  "stored_mode_count": 60,
+  "near_degenerate_ratio": 1.20,
+  "mode_path_weightings": ["uniform", "inverse_square"],
+  "rotation_null": {
+    "n_draws": 5000,
+    "moving_domain_start": 318,
+    "pivot": "TBD centroid projected onto the frozen mean-endpoint screw axis, transported from the anchored mean frame to each reference on residues <=317.",
+    "sampling": "Uniform unit vectors in an orthonormal three-dimensional internally projected TBD rotation displacement space, using a coordinate-covariant intrinsic rotation frame and the same random coefficients.",
+    "percentile_gate": 95.0,
+    "finite_tangent_overlap_gate": 0.90,
+    "interpretation": "Descriptive comparison within this local hinge-rotation family; not a biological population p value or all-internal-direction null."
+  },
+  "contact": {
+    "discovery_reference": "8CVP",
+    "discovery_cutoff_A": 15.0,
+    "candidate_count": 142,
+    "candidate_unit": "CRBN author residue x contact class",
+    "classes": ["HB_TBD", "CRBN_DDB1"],
+    "spring_factors": [0.8, 0.9, 1.1, 1.2],
+    "domain_bounds": {"NTD": [77, 186], "HB": [187, 317], "TBD": [318, 424]},
+    "unperturbed_sequential_distance_max": 2,
+    "ridge_alpha": 1.0,
+    "ridge_loss": "Mean squared error plus alpha times squared slope norm; intercept unpenalized.",
+    "ridge_target": "Exact derivative of log S_flexible with respect to log group spring factor, divided by group contact count.",
+    "ridge_features": ["log_contact_count", "log_joint_degree", "axis_distance_A", "domain"],
+    "ridge_exclusion_distance_A": 10.0,
+    "ridge_minimum_training": 20,
+    "ridge_minimum_same_domain": 10,
+    "ridge_exclude_shared_edges": true,
+    "ridge_deduplicate_identical_edge_sets": true,
+    "inferential_p_or_fdr": false,
+    "missing_group_policy": "Explicitly absent; never impute a zero effect or count absence as stability.",
+    "ranking": "Report original stability flags separately from new descriptive rankings in the frozen discovery universe. No predetermined retained candidate count."
+  },
+  "claim_gate": {
+    "positive_tolerance": 1e-7,
+    "primary": "Positive R and rotational-null percentile >=95 in all three apo references at 15A, sign retained in 8CVP13/18A and inverse-square models. Rfinite and Rtangent remain separate; finite-closure transfer additionally requires overlap >=0.90.",
+    "preservation": "M = log S_flexible - log S_isolated >= -1e-7 across primary apo references supports relative specificity preservation, never greater absolute compliance than isolated.",
+    "internal_modal_claim": "Require separately demonstrated closure-aligned modal/subspace correspondence before describing preserved modal direction as dependent on internal partner deformation.",
+    "contact": "Descriptive model candidates. Claims beyond tested geometric predictors require adequate held-out comparator support. No post hoc expansion of candidate classes to match known variants."
+  },
+  "numerics": {
+    "matrix_order_relative_tolerance": 1e-8,
+    "response_relative_tolerance": 1e-7,
+    "derivative_step": 1e-4,
+    "no_silent_pseudoinverse_for_partner_blocks": true
+  },
+  "external": {
+    "allosteric_structure": "9SFM",
+    "allosteric_ligand": "A1CEG",
+    "heavy_atom_contact_cutoff_A": 4.5,
+    "comparison_role": "Retrospective structural and observable-specific comparison, including mismatches and unevaluable sites.",
+    "blood_variant_count": 12
+  },
+  "excluded_evidence": ["quarantined historical MD", "quarantined historical free energies", "cryo-EM fitted states that failed the frozen stability criteria"],
+  "wet_lab_or_long_MD": false
+}
