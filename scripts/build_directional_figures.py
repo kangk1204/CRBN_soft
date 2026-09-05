@@ -356,7 +356,7 @@ def build_fig3(paths: BuildPaths) -> dict[str, Any]:
     source_mode = write_snapshot(mode_path, paths, "Fig3_8CVP_alpha_mode_path.csv")
 
     fig = plt.figure(figsize=(WIDTH_IN, 6.25), constrained_layout=False)
-    grid = GridSpec(2, 2, figure=fig, hspace=0.48, wspace=0.32)
+    grid = GridSpec(2, 2, figure=fig, hspace=0.62, wspace=0.32)
 
     ax = fig.add_subplot(grid[0, 0])
     refs = ordered_refs(models)
@@ -374,7 +374,7 @@ def build_fig3(paths: BuildPaths) -> dict[str, Any]:
         ax.plot(x, np.log10(values), marker=marker, color=REF_COLORS.get(pdb, DARK_GREY), label=pdb, alpha=0.95)
     ax.set_xticks(x)
     ax.set_xticklabels([MODEL_LABELS[m] for m in MODEL_ORDER])
-    ax.set_ylabel("log10 relative closure compliance")
+    ax.set_ylabel(r"$\log_{10} S_{\mathrm{close}}$")
     ax.set_title("Relative closure compliance")
     finish_axis(ax, grid="y")
     panel_label(ax, "a")
@@ -423,7 +423,7 @@ def build_fig3(paths: BuildPaths) -> dict[str, Any]:
     ax.scatter(xpos, m_values, marker="D", s=22, color=BLACK, zorder=4, label="Flexible - isolated")
     ax.set_xticks(xpos)
     ax.set_xticklabels(refs)
-    ax.set_ylabel("Delta log S_close")
+    ax.set_ylabel(r"$\Delta\ln S_{\mathrm{close}}$")
     ymin = min(min(m_values), min(r_body), min(np.asarray(r_body) + np.asarray(r_internal)), 0.0) - 0.06
     ymax = max(max(m_values), max(r_body), max(np.asarray(r_body) + np.asarray(r_internal)), 0.0) + 0.08
     ax.set_ylim(ymin, ymax)
@@ -605,7 +605,7 @@ def build_fig4(paths: BuildPaths) -> dict[str, Any]:
     labels = [compact_residue_label(row) for _, row in plot_rows.iterrows()]
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
-    ax.set_xlabel("Derivative of log S_close")
+    ax.set_xlabel(r"Derivative of $\ln S_{\mathrm{close}}$")
     ax.set_title("Candidate contact effects")
     finish_axis(ax, grid="x", zero_line=True)
     panel_label(ax, "a")
@@ -648,8 +648,8 @@ def build_fig4(paths: BuildPaths) -> dict[str, Any]:
     ax.plot([lo, hi], [lo, hi], color=MID_GREY, linewidth=0.8, linestyle=":")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.set_xlabel("Derivative of log C_close")
-    ax.set_ylabel("Derivative of log mean compliance")
+    ax.set_xlabel(r"Derivative of $\ln C_{\mathrm{close}}$")
+    ax.set_ylabel(r"Derivative of $\ln \overline{C}$")
     ax.set_title("Compliance decomposition")
     finish_axis(ax, grid="both")
     panel_label(ax, "b")
@@ -668,8 +668,8 @@ def build_fig4(paths: BuildPaths) -> dict[str, Any]:
             linewidth=0.35,
             zorder=3,
         )
-    ax.set_xlabel("Derivative of R_body")
-    ax.set_ylabel("Derivative of R_internal")
+    ax.set_xlabel(r"Derivative of $R_{\mathrm{body}}$")
+    ax.set_ylabel(r"Derivative of $R_{\mathrm{internal}}$")
     ax.set_title("DDB1 role derivatives")
     finish_axis(ax, grid="both", zero_line=True)
     ax.axvline(0, color=MID_GREY, linewidth=0.55, zorder=0)
@@ -847,7 +847,7 @@ def build_fig5(paths: BuildPaths) -> dict[str, Any]:
         linewidth=0.35,
         alpha=0.95,
     )
-    label_offsets = {264: (10, 2), 289: (0, 12), 339: (-14, 6)}
+    label_positions = {264: (27, 7), 289: (18, 13), 339: (8, 17)}
     for residue in (264, 289, 339):
         hit = site[(site["residue"] == residue) & (stable)]
         if not hit.empty:
@@ -855,14 +855,16 @@ def build_fig5(paths: BuildPaths) -> dict[str, Any]:
             ax.annotate(
                 str(residue),
                 (row["discovery_rank"], row["min_distance_to_A1CEG_A"]),
-                xytext=label_offsets[residue],
-                textcoords="offset points",
+                xytext=label_positions[residue],
+                textcoords="data",
+                arrowprops={"arrowstyle": "-", "color": MID_GREY, "linewidth": 0.5},
+                bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.4},
                 fontsize=6.5,
                 color=BLACK,
             )
     ax.axhline(4.5, color=ORANGE, linestyle="--", linewidth=0.9)
     ax.set_xlabel("Rank within contact class")
-    ax.set_ylabel("Nearest A1CEG distance (A)")
+    ax.set_ylabel("Nearest A1CEG distance (Å)")
     ax.set_title("9SFM ligand-site relation")
     finish_axis(ax, grid="both")
     panel_label(ax, "a")
@@ -948,12 +950,12 @@ def build_fig5(paths: BuildPaths) -> dict[str, Any]:
     )
     ax.set_xticks(x)
     ax.set_xticklabels(saxs["condition"], rotation=35, ha="right", rotation_mode="anchor")
-    ax.set_ylabel("Refit Rg (nm)")
-    ax.set_title("CRBNmidi SAXS Rg")
+    ax.set_ylabel(r"Refit $R_g$ (nm)")
+    ax.set_title(r"CRBNmidi SAXS $R_g$")
     finish_axis(ax, grid="y")
     panel_label(ax, "c")
     ax.legend(
-        handles=[Line2D([0], [0], marker="o", color=BLUE, label="error bar: Guinier SE; qRg <= 1.3")],
+        handles=[Line2D([0], [0], marker="o", color=BLUE, label=r"Guinier SE; $qR_g\leq 1.3$")],
         loc="best",
     )
 
@@ -965,8 +967,8 @@ def build_fig5(paths: BuildPaths) -> dict[str, Any]:
     x = np.arange(len(rows))
     ax_top.bar(x, rows["dsf_delta_delta_tm_vs_wt_degC"], width=0.62, color=PURPLE)
     ax_bottom.bar(x, rows["saxs_delta_rg_vs_wt_angstrom"], width=0.62, color=GREEN)
-    ax_top.set_ylabel("ddTm (degC)")
-    ax_bottom.set_ylabel("dRg (A)")
+    ax_top.set_ylabel(r"$\Delta\Delta T_m$ (°C)")
+    ax_bottom.set_ylabel(r"$\Delta R_g$ (Å)")
     ax_bottom.set_xticks(x)
     ax_bottom.set_xticklabels(
         [short_variant_label(value) for value in rows["variant"]],
@@ -996,19 +998,19 @@ def build_fig5(paths: BuildPaths) -> dict[str, Any]:
 
 
 def write_legends(paths: BuildPaths) -> Path:
-    text = """# Directional-mechanics figure legends
+    text = r"""# Directional-mechanics figure legends
 
 ## Fig3
 
-DDB1 separates complex mode ordering from the CRBN closure response. (a) Relative closure compliance, log10 S_close, is shown for five open references under isolated, fixed-DDB1, rigid-body-DDB1, and flexible-DDB1 models. (b) The finite closure response is decomposed into the contribution from DDB1 body motion and the additional contribution from DDB1 internal relaxation; hatched internal segments indicate negative values and diamonds show flexible minus isolated CRBN. (c) The tangent-direction response is compared with the prespecified local-rotation null distribution, with the 95th percentile reference shown. (d) For 8CVP, mode ranks across interface strength alpha show the Hungarian-tracked branch that starts from the isolated CRBN lowest internal mode, the best internal CRBN match, and the raw CRBN-vector match when available.
+Fig. 3. DDB1 separates complex mode ordering from the CRBN closure response. (a) Relative closure compliance, $\log_{10} S_{\mathrm{close}}$, is shown for five open references under isolated, fixed-DDB1, rigid-body-DDB1, and flexible-DDB1 models. (b) Natural-log differences in relative compliance for the finite closure direction separate the contribution from DDB1 body motion and the additional contribution from DDB1 internal relaxation; hatched internal segments indicate negative values and diamonds show flexible minus isolated CRBN. (c) The tangent-direction response is compared with the prespecified local-rotation null distribution, with the 95th percentile reference shown. (d) For 8CVP, mode ranks across interface strength alpha show the Hungarian-tracked branch that starts from the isolated CRBN lowest internal mode, the best internal CRBN match, and the raw CRBN-vector match when available.
 
 ## Fig4
 
-Contact groups have separable effects on closure compliance, mean compliance, and DDB1-mediated response terms. (a) Frozen stable candidates and additional high-effect 8CVP contact groups are ranked by the derivative of log S_close. Hatched bars mark groups that met the prespecified stable apo rule. (b) The same groups are decomposed into derivatives of closure compliance and mean compliance; the diagonal marks equal changes in both terms, so horizontal displacement from the diagonal reflects change in relative closure compliance. Circles mark prespecified stable candidates and squares mark additional high-effect groups. (c) The axes show derivatives of R_body and R_internal for the same contact groups. (d) The robustness matrix reports P, F, or A: P means the condition was observed with the same sign and remained in the top 20 percent under the prespecified rule; F means the gate failed; A means the contact group was absent.
+Fig. 4. Contact groups have separable effects on closure compliance, mean compliance, and DDB1-mediated response terms. (a) Frozen stable candidates and additional high-effect 8CVP contact groups are ranked by the finite-contrast derivative of $\ln S_{\mathrm{close}}$. Hatched bars mark groups that met the prespecified stable apo rule. (b) The same groups are decomposed into exact derivatives of log closure compliance and log mean compliance; the diagonal marks equal changes in both terms, so horizontal displacement from the diagonal reflects change in relative closure compliance. Circles mark prespecified stable candidates and squares mark additional high-effect groups. (c) The axes show derivatives of $R_{\mathrm{body}}$ and $R_{\mathrm{internal}}$ for the same contact groups. (d) The robustness matrix reports P, F, or A: P means the condition was observed with the same sign and remained in the top 20 percent under the prespecified rule; F means the gate failed; A means the contact group was absent.
 
 ## Fig5
 
-Public experimental observations provide retrospective context for the contact candidates. (a) All 142 candidate groups are compared with the A1CEG allosteric-ligand site in 9SFM; the x-axis is the rank within each contact class, same-residue site contacts are outlined, and residues 264, 289, and 339 are labelled when present. (b) The 12 Blood 2025 variants are shown by the qualitative Supplementary Table 3 functional class and by endpoint availability or candidate-overlap status; abundance/folding is marked only as availability because it was not a separated measurement in these rows. (c) Refit SAXS Guinier Rg values compare apo and ligand-bound CRBNmidi conditions; error bars are fitting standard errors from the Guinier fits and the plotted fits use the qRg <= 1.3 criterion. (d) The O'Connor compound-9 mutant cases are split into separate axes for DeltaDeltaTm in degC and DeltaRg in Angstroms. These panels are not used as prospective validation or as a classifier.
+Fig. 5. Public experimental observations provide retrospective context for the contact candidates. (a) All 142 candidate groups are compared with the A1CEG allosteric-ligand site in 9SFM; the x-axis is the rank within each contact class, same-residue site contacts are outlined, and residues 264, 289, and 339 are labelled when present. (b) The 12 Blood 2025 variants are shown by the qualitative Supplementary Table 3 functional class and by endpoint availability or candidate-overlap status; light grey indicates an unavailable separate endpoint or no candidate overlap. (c) Refit SAXS Guinier $R_g$ values compare apo and ligand-bound CRBNmidi conditions; error bars are fitting standard errors from the Guinier fits and the plotted fits use the $qR_g\leq 1.3$ criterion. (d) The O'Connor compound-9 mutant cases are split into separate axes for $\Delta\Delta T_m$ in °C and $\Delta R_g$ in Å.
 """
     paths.source_dir.mkdir(parents=True, exist_ok=True)
     output = paths.source_dir / "LEGENDS.md"
