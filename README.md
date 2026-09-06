@@ -513,3 +513,10 @@ validation and an intentional frozen-hash update in a new software release.
 
 Software citation metadata are provided in `CITATION.cff`. The code is released
 under the MIT License.
+
+## Atomistic response development
+
+An optional [atomistic workflow](docs/ATOMISTIC_RESPONSE.md) tests DDB1 mobility
+using OpenMM in a separate environment. It currently provides preparation,
+boundary-condition validation and short technical simulations. It does not
+replace the frozen network analyses or provide a converged atomistic result.

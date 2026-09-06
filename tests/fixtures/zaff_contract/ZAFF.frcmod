@@ -1,0 +1,6 @@
+Numerical parser fixture; incomplete for simulation
+BOND
+ZN-S1 32.69 2.426
+ANGL
+CT-S1-ZN 64.397 101.733
+S1-ZN-S1 35.729 109.472

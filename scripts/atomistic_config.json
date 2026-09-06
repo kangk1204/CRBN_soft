@@ -1,0 +1,109 @@
+{
+  "protocol_version": "0.1.0",
+  "started_date": "2026-09-06",
+  "status": "feasibility_and_method_validation",
+  "seed": 20260907,
+  "references": [
+    "8CVP",
+    "8D7X",
+    "8D7Y"
+  ],
+  "pilot_reference": "8CVP",
+  "cif_dir": "data/_cif_cache",
+  "core_residue_file": "data/crbn_residue_window.csv",
+  "core_position_count": 269,
+  "core_internal_dimension": 801,
+  "models": [
+    "isolated",
+    "fixed",
+    "rigid",
+    "flexible"
+  ],
+  "temperature_K": 300.0,
+  "timestep_fs_initial": 1.0,
+  "hydrogen_mass_repartitioning": false,
+  "pilot_replicate_seeds": [
+    20260907,
+    20260908,
+    20260909
+  ],
+  "primary_observable": "Derivative of mean core projection on the fixed internally projected closure vector with respect to its conjugate force",
+  "closure_force_rule": "Use the maximum zero-force closure SD across fixed, rigid and flexible pilots: F0*sigma_max/(RT)=0.25. Lock one common F0 before force comparison.",
+  "force_multipliers": [
+    -2.0,
+    -1.0,
+    0.0,
+    1.0,
+    2.0
+  ],
+  "normalization": "Report absolute closure susceptibility first. Estimate the 801-dimensional mean susceptibility only with an independently converged covariance or isotropic force-probe estimator; do not normalize by one unrelated CV.",
+  "gauge": "The same six reference-core collective translation/rotation constraints or a validated finite-restraint limit in every model, imposed during sampling, not just post-hoc alignment",
+  "replicate_unit": "independent initialization and equilibration; frames are not independent replicates",
+  "initial_technical_pilot_gpu_hour_cap": 2.0,
+  "production_gate": {
+    "topology_and_metal_review": "pass_required",
+    "six_coordinate_gauge_validation": "pass_required",
+    "rigid_body_validation": "pass_required",
+    "finite_force_linearity": "pass_required",
+    "minimum_effective_samples_per_replicate": 50,
+    "maximum_relative_half_trajectory_difference": 0.2,
+    "restraint_sensitivity_relative_difference": 0.05,
+    "magnitude_response_half_vs_full_force_relative_difference": 0.2,
+    "independent_replicates": 3,
+    "all_gates_are_protocol_rules_not_physical_constants": true
+  },
+  "candidate_followup": {
+    "requires_response_pilot_pass": true,
+    "retained_model_candidates": [
+      186,
+      222,
+      289,
+      339,
+      422
+    ],
+    "initial_structural_inspection": [
+      289,
+      339
+    ],
+    "specific_mutations": [],
+    "rule": "Fix any atomistic perturbation and its controls after inspecting atomistic interactions but before computing its response effect. Do not equate a spring multiplier to an amino-acid substitution."
+  },
+  "excluded_evidence": [
+    "historical quarantined MD",
+    "historical quarantined free energies",
+    "biased external trajectories as independent equilibrium samples"
+  ],
+  "mlip": "not in initial scope",
+  "qm": "only if a metal parameterization gate cannot be satisfied with an applicable published parameter set; no unvalidated legacy parameters",
+  "technical_model": {
+    "reference": "8CVP",
+    "ddb1_residues": [
+      1,
+      1140
+    ],
+    "crbn_residues": [
+      64,
+      428
+    ],
+    "crbn_terminal_caps": [
+      "ACE",
+      "NME"
+    ],
+    "internal_missing_residues": {
+      "DDB1": [
+        546,
+        550
+      ],
+      "CRBN": [
+        342,
+        357
+      ]
+    },
+    "protein_forcefield": "Amber ff14SB",
+    "water_model": "TIP3P",
+    "zinc_parameter_model": "ZAFF center 1, CY1/S1 and ZN1/ZN, complete bonded-site charges and parameters",
+    "water_buffer_A": 12.0,
+    "technical_salt_policy": "Neutralization only for integration feasibility; physiological salt must be fixed before scientific response sampling.",
+    "preparation_scope": "One repaired loop/sidechain model for technical feasibility only; alternative models are required before representation-robust claims."
+  }
+}

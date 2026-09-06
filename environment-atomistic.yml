@@ -1,0 +1,12 @@
+name: crbn-atomistic125
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - openmm=8.5.2
+  - pdbfixer=1.12
+  - ambertools=26.0
+  - parmed=4.3.1
+  - numpy=2.4
+  - scipy
+  - pytest

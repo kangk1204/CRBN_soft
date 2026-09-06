@@ -1,0 +1,1 @@
+Cap geometry fixtures were generated with AmberTools26 ff14SB using generate_templates.leap. The terminal coordinates retain observed atoms of RCSB 8CVP, CRBN B64 and B428. These fragments test coordinate transfer; they are not simulation systems.

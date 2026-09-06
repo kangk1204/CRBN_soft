@@ -1,0 +1,6 @@
+source leaprc.protein.ff14SB
+met = sequence { ACE MET NME }
+asp = sequence { ACE ASP NME }
+savePdb met results/atomistic/cap_templates/ace_met_nme.pdb
+savePdb asp results/atomistic/cap_templates/ace_asp_nme.pdb
+quit

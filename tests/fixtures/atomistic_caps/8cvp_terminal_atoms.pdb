@@ -1,0 +1,12 @@
+REMARK Observed 8CVP terminal heavy atoms, source RCSB 8CVP
+ATOM      1  N   MET B  64      97.662 137.123  69.942  1.00  0.00           N  
+ATOM      2  CA  MET B  64      97.250 136.413  71.147  1.00  0.00           C  
+ATOM      3  C   MET B  64      96.850 137.387  72.249  1.00  0.00           C  
+ATOM      4  O   MET B  64      97.499 138.414  72.445  1.00  0.00           O  
+ATOM      5  CB  MET B  64      98.372 135.495  71.638  1.00  0.00           C  
+ATOM      6  N   ASP B 428     122.883 102.522  81.887  1.00  0.00           N  
+ATOM      7  CA  ASP B 428     121.993 101.365  81.860  1.00  0.00           C  
+ATOM      8  C   ASP B 428     121.294 101.239  80.511  1.00  0.00           C  
+ATOM      9  O   ASP B 428     120.285 100.542  80.387  1.00  0.00           O  
+ATOM     10  CB  ASP B 428     120.954 101.456  82.979  1.00  0.00           C  
+END
