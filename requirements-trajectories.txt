@@ -1,0 +1,7 @@
+# Separate optional reader environment used for the archived XTC comparison.
+# Tested with Python 3.12.14; MDTraj requires Python >=3.11.
+numpy==2.3.5
+scipy==1.16.2
+mdtraj==1.11.0
+pyparsing==3.2.3
+pypdf==6.3.0

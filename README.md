@@ -286,6 +286,74 @@ variant observations. Spatial overlap and qualitative functional outcomes
 remain separate. Offline execution requires the cached sources and never
 treats an absent cache as evidence that a source is unavailable publicly.
 
+## Test the effect of the observed CRBN residue set
+
+The observation-window workflow adds observed, canonically mapped CRBN
+residues to each open-reference network while measuring the response on the
+same 269-position core. Added residues relax without receiving a test force.
+The core translation and rotation constraints are imposed before inversion;
+the mean response is always calculated over the same 801 internal coordinates.
+
+Stage the matching combined bundle, then run the new stages:
+
+```bash
+python scripts/stage_review_bundle.py /path/to/CRBN_review_response_data_bundle_20260906.zip
+python scripts/run_review_extensions.py --config scripts/review_extensions_config.json --output-dir results/review_response --offline
+```
+
+The new stager verifies both the original mechanics manifest and the extension
+manifest. Historical results go to `results/directional_mechanics/`; the new
+results go to `results/review_response/`. Code snapshots are checked without
+overwriting the installed checkout. `--verify-only` validates the bundle and
+destination conflicts without extracting files.
+
+The `window`, `external`, and `figures` stages can be selected with `--stages`.
+Thirty matched conditions cover five open references, three distance cutoffs
+and two spring weightings. Four DDB1 treatments are evaluated in each residue
+representation. Primary contact comparisons perturb the exact original spring
+sets; the secondary comparison also perturbs newly observed connections for
+the same 142 candidate IDs. Directional compliance, mean compliance, their
+ratio and the DDB1 contribution terms are reported separately. The expected
+ordering of absolute compliance is checked, without imposing it on the ratio.
+
+The external audit distinguishes observed-but-excluded positions from
+unresolved positions, network springs from atom contacts, tested substitutions
+from patient-reported variants, and an unavailable download from an accession
+mentioned in an article. Acquisition dates, source hashes, exclusions and
+per-assay evidence accompany the tables. Historical variant annotations are
+preserved in the original record; the new identity audit supplies corrections.
+
+Offline execution requires the staged sources and frozen acquisition records.
+It reproduces the coordinate-network calculations and figures from the supplied
+inputs. Replaying saved trajectory metrics is distinct from recomputing them
+from raw coordinates. The latter needs the pinned Zenodo 16459122 archive or
+online range access. Apo simulations, biased path simulations, relaxation
+stages and processed path coordinates are identified separately. Each source
+is reported individually; frames are not independent experiments, and this
+structural comparison does not estimate equilibrium populations or transition rates.
+
+Raw XTC reading uses an optional, separately pinned environment. Coordinate
+decoding used Python 3.12.14, MDTraj 1.11.0 and NumPy 2.3.5; the package records
+the separate acquisition, scoring and replay runtimes. The supplied
+`requirements-trajectories.txt` includes the PDF reader needed by the external
+source audit. It does not
+require installing the simulation software from the source archive, and no code
+from that archive is executed. Keep this environment separate from the main
+analysis environment:
+
+```bash
+python3.12 -m venv .venv-trajectory
+.venv-trajectory/bin/python -m pip install -r requirements-trajectories.txt
+CRBN_REVIEW_ZENODO_ARCHIVE=/absolute/path/to/rMDautoencoderGitHubRepo.zip .venv-trajectory/bin/python scripts/review_external.py --config scripts/review_extensions_config.json --output-dir results/review_response/analysis/external --offline
+```
+
+The raw archive is verified against the frozen provider checksum before local
+reading. Without `--offline`, the same runner can retrieve members by HTTP range,
+checking ZIP CRCs and individual SHA-256 values while keeping disk use bounded.
+The reader records trajectory, topology, residue mapping, periodic-image handling
+and source-processing role. A successful metric replay is labelled explicitly
+and never reported as a fresh raw-coordinate run.
+
 ## Execute the cryo-EM domain-fitting stage
 
 With ChimeraX installed and the archived raw maps and coordinate caches staged,
