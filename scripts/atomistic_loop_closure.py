@@ -26,6 +26,14 @@ geometry remain fixed. Eight anchor atoms are fit with a fixed small torsion
 penalty, using a fixed seeded start set. Actual junction geometry is checked
 after substituting the untouched target anchors and again after PDB rounding.
 Failed candidates are retained as unqualified; qualified_for_md is always false.
+
+Optional --steric-aware adds a fixed preparatory heavy-atom separation policy.
+It checks loop versus every unchanged heavy atom (observed or modeled), and
+loop internal pairs, excluding graph distances one and two (bonds and 1-3).
+The minimum separation is 0.20 nm; the objective uses a 0.22 nm target with
+0.02 nm penalty scale. No periodic box, radii, charges or force-field energies
+are used. Passing this broad gross-clash screen is not vdW/FF qualification.
+The option does not alter any existing geometry gate or the fixed search budget.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 try:
@@ -88,6 +97,19 @@ POLICY = {
     "serialized_bond_delta_max_nm": 0.000174,
     "serialized_angle_delta_max_degrees": 0.2,
 }
+STERIC_POLICY = {
+    "mode": "steric_aware_preparation",
+    "minimum_separation_nm": 0.20,
+    "optimization_target_separation_nm": 0.22,
+    "penalty_sigma_nm": 0.02,
+    "excluded_bond_graph_distances": [1, 2],
+    "include_1_4_and_more_distant_pairs": True,
+    "periodic_box": False,
+    "environment": "all unchanged non-loop heavy atoms, including observed and modeled atoms",
+    "objective": "one nearest allowed environment contact and one nearest allowed internal contact per loop atom; hinge deficits divided by penalty_sigma_nm",
+    "final_screen": "every allowed pair below minimum_separation_nm is reported before and after PDB rounding",
+    "scope": "gross-clash preparation only; not van der Waals, force-field or MD qualification",
+}
 
 
 @dataclass(frozen=True)
@@ -108,6 +130,20 @@ class Torsion:
     kind: str
     axis: tuple[int, int]
     moving: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class StericContext:
+    peptide_keys: tuple[tuple[int, str], ...]
+    loop_indices: tuple[int, ...]
+    loop_atom_keys: tuple[tuple[str, int, str, str], ...]
+    loop_source_status: tuple[str, ...]
+    environment_atom_keys: tuple[tuple[str, int, str, str], ...]
+    environment_source_status: tuple[str, ...]
+    environment_coordinates_nm: np.ndarray
+    environment_excluded_indices: np.ndarray
+    internal_allowed: np.ndarray
+    environment_tree: cKDTree
 
 
 def peptide_from_input(donor: dict) -> Peptide:
@@ -298,12 +334,126 @@ def anchor_indices(peptide: Peptide) -> list[int]:
     return [peptide.index[residue, atom] for residue in endpoints for atom in ("N", "CA", "C", "O")]
 
 
-def close_loop(peptide: Peptide, target_anchors_nm: np.ndarray, *, max_nfev: int = 300) -> dict:
+def build_steric_context(peptide: Peptide, target: dict, lines: list[str], mapping: dict) -> StericContext:
+    """Build immutable target environment and exact bond/1-3 exclusion masks."""
+    lookup, loop, _ = validate_target(peptide, target, lines, mapping)
+    chain = target["chain"]
+    moving = tuple(i for i, (residue, _) in enumerate(peptide.keys) if residue in loop)
+    atoms = strict_atoms(lines)
+    environment = [atom for atom in atoms if atom.chain != chain or atom.resseq not in loop]
+    env_index = {atom_key(atom): i for i, atom in enumerate(environment)}
+    adjacency = [set() for _ in peptide.keys]
+    for first, second in peptide.bonds:
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+    allowed = np.ones((len(moving), len(moving)), dtype=bool)
+    moving_index = {index: i for i, index in enumerate(moving)}
+    exclusions = []
+    for row, index in enumerate(moving):
+        # A shortest graph path of <=2 excludes bonds and 1-3 interactions,
+        # including paths across both fixed target peptide junctions.
+        near = {index} | adjacency[index]
+        near |= {other for neighbor in adjacency[index] for other in adjacency[neighbor]}
+        excluded = []
+        for other in near:
+            if other in moving_index:
+                allowed[row, moving_index[other]] = False
+            else:
+                excluded.append(env_index[chain, *peptide.keys[other]])
+        exclusions.append(sorted(excluded))
+    width = max(map(len, exclusions), default=0)
+    padded = np.full((len(moving), width), -1, dtype=int)
+    for row, excluded in enumerate(exclusions):
+        padded[row, :len(excluded)] = excluded
+    xyz = np.array([atom.xyz / 10.0 for atom in environment])
+    if not environment:
+        raise ValueError("Steric preparation requires the fixed target environment")
+    tree = cKDTree(xyz, copy_data=True)
+    for array in (xyz, padded, allowed, tree.data):
+        array.setflags(write=False)
+    loop_atoms = [lookup[chain, *peptide.keys[index]] for index in moving]
+    return StericContext(
+        peptide.keys, moving, tuple(atom.key for atom in loop_atoms),
+        tuple(mapping[atom_key(atom)]["source_status"] for atom in loop_atoms),
+        tuple(atom.key for atom in environment),
+        tuple(mapping.get(atom_key(atom), {}).get("source_status", "not_in_repair_inventory") for atom in environment),
+        xyz, padded, allowed, tree,
+    )
+
+
+def steric_distances(coordinates_nm: np.ndarray, context: StericContext) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    coordinates = np.asarray(coordinates_nm, dtype=float)
+    if coordinates.shape != (len(context.peptide_keys), 3) or not np.isfinite(coordinates).all():
+        raise ValueError("Steric coordinates must match the finite donor nm array")
+    loop = coordinates[list(context.loop_indices)]
+    # At most `width` environment atoms are excluded for any moving atom;
+    # querying width+1 neighbors therefore includes its nearest allowed atom.
+    k = min(len(context.environment_atom_keys), context.environment_excluded_indices.shape[1] + 1)
+    distances, indices = context.environment_tree.query(loop, k=k)
+    distances, indices = distances.reshape(len(loop), k), indices.reshape(len(loop), k)
+    excluded = (indices[:, :, None] == context.environment_excluded_indices[:, None, :]).any(axis=2)
+    nearest_environment = np.where(excluded, np.inf, distances).min(axis=1)
+    internal = np.linalg.norm(loop[:, None, :] - loop[None, :, :], axis=2)
+    internal = np.where(context.internal_allowed, internal, np.inf)
+    return nearest_environment, internal.min(axis=1), internal
+
+
+def steric_residual(coordinates_nm: np.ndarray, context: StericContext) -> np.ndarray:
+    environment, internal, _ = steric_distances(coordinates_nm, context)
+    nearest = np.r_[environment, internal]
+    return np.maximum(STERIC_POLICY["optimization_target_separation_nm"] - nearest, 0.0) / STERIC_POLICY["penalty_sigma_nm"]
+
+
+def steric_report(coordinates_nm: np.ndarray, context: StericContext) -> dict:
+    """Enumerate every unresolved allowed pair, not just objective neighbors."""
+    nearest_environment, nearest_internal, internal = steric_distances(coordinates_nm, context)
+    loop = np.asarray(coordinates_nm)[list(context.loop_indices)]
+    minimum = STERIC_POLICY["minimum_separation_nm"]
+    unresolved = []
+    for row, neighbors in enumerate(context.environment_tree.query_ball_point(loop, minimum)):
+        excluded = set(context.environment_excluded_indices[row])
+        for other in sorted(set(neighbors) - excluded):
+            distance = float(np.linalg.norm(loop[row] - context.environment_coordinates_nm[other]))
+            if distance < minimum:
+                unresolved.append({"kind": "loop_environment", "first": list(context.loop_atom_keys[row]),
+                                   "second": list(context.environment_atom_keys[other]), "distance_nm": distance,
+                                   "first_source_status": context.loop_source_status[row],
+                                   "second_source_status": context.environment_source_status[other]})
+    first, second = np.where(np.triu(internal < minimum, k=1))
+    for row, other in zip(first, second, strict=True):
+        unresolved.append({"kind": "loop_internal", "first": list(context.loop_atom_keys[row]),
+                           "second": list(context.loop_atom_keys[other]), "distance_nm": float(internal[row, other]),
+                           "first_source_status": context.loop_source_status[row],
+                           "second_source_status": context.loop_source_status[other]})
+    unresolved.sort(key=lambda row: (row["distance_nm"], row["kind"], row["first"], row["second"]))
+
+    def finite_minimum(values):
+        finite = values[np.isfinite(values)]
+        return float(finite.min()) if finite.size else None
+
+    excluded_environment = int(np.count_nonzero(context.environment_excluded_indices >= 0))
+    internal_pairs = int(np.count_nonzero(np.triu(context.internal_allowed, k=1)))
+    return {"pass": not unresolved, "minimum_separation_nm": minimum,
+            "environment_atom_count": len(context.environment_atom_keys), "loop_atom_count": len(loop),
+            "excluded_bonded_or_1_3_environment_pairs": excluded_environment,
+            "excluded_bonded_or_1_3_internal_pairs": len(loop) * (len(loop) - 1) // 2 - internal_pairs,
+            "checked_environment_pairs": len(loop) * len(context.environment_atom_keys) - excluded_environment,
+            "checked_internal_pairs": internal_pairs,
+            "nearest_allowed_environment_nm": finite_minimum(nearest_environment),
+            "nearest_allowed_internal_nm": finite_minimum(nearest_internal),
+            "unresolved_count": len(unresolved), "unresolved_pairs": unresolved,
+            "scope": STERIC_POLICY["scope"]}
+
+
+def close_loop(peptide: Peptide, target_anchors_nm: np.ndarray, *, max_nfev: int = 300,
+               sterics: StericContext | None = None) -> dict:
     target = np.asarray(target_anchors_nm, dtype=float)
     if target.shape != (8, 3) or not np.isfinite(target).all():
         raise ValueError("Both fixed anchor N/CA/C/O coordinates are required in nm")
     if not isinstance(max_nfev, int) or not 1 <= max_nfev <= POLICY["max_nfev_per_start"]:
         raise ValueError("max_nfev must be within the fixed bounded protocol")
+    if sterics is not None and sterics.peptide_keys != peptide.keys:
+        raise ValueError("Steric context does not match the donor atom identities")
     torsions, anchors = torsions_for(peptide), anchor_indices(peptide)
     source = peptide.coordinates_nm[anchors]
     source_center, target_center = source.mean(axis=0), target.mean(axis=0)
@@ -317,8 +467,10 @@ def close_loop(peptide: Peptide, target_anchors_nm: np.ndarray, *, max_nfev: int
                 + target_center + parameters[3:6])
 
     def residual(parameters):
-        fit = (coordinates(parameters)[anchors] - target).ravel() / POLICY["anchor_sigma_nm"]
-        return np.r_[fit, POLICY["torsion_penalty_per_radian"] * parameters[6:]]
+        changed = coordinates(parameters)
+        fit = (changed[anchors] - target).ravel() / POLICY["anchor_sigma_nm"]
+        original = np.r_[fit, POLICY["torsion_penalty_per_radian"] * parameters[6:]]
+        return original if sterics is None else np.r_[original, steric_residual(changed, sterics)]
 
     bounds = np.r_[np.full(3, np.pi), np.full(3, POLICY["translation_bound_nm"]), np.full(len(torsions), POLICY["torsion_bound_radians"])]
     rng, starts = np.random.default_rng(POLICY["seed"]), []
@@ -329,6 +481,8 @@ def close_loop(peptide: Peptide, target_anchors_nm: np.ndarray, *, max_nfev: int
         fit = least_squares(residual, initial, bounds=(-bounds, bounds), max_nfev=max_nfev, ftol=1e-10, xtol=1e-10, gtol=1e-10)
         starts.append({"parameters": fit.x, "cost": float(fit.cost), "nfev": int(fit.nfev),
                        "solver_success": bool(fit.success), "termination": str(fit.message), "start_sd_radians": sd})
+        if sterics is not None:
+            starts[-1]["steric_screen"] = steric_report(coordinates(fit.x), sterics)
     selected = min(range(len(starts)), key=lambda i: (starts[i]["cost"], i))
     best = starts[selected]
     result = coordinates(best["parameters"])
@@ -424,7 +578,8 @@ def validate_target(peptide: Peptide, target: dict, lines: list[str], mapping: d
     return lookup, loop, observed
 
 
-def graft_lines(lines: list[str], peptide: Peptide, coordinates: np.ndarray, target: dict, mapping: dict) -> tuple[list[str], dict]:
+def graft_lines(lines: list[str], peptide: Peptide, coordinates: np.ndarray, target: dict, mapping: dict,
+                *, sterics: StericContext | None = None) -> tuple[list[str], dict]:
     """Change only modeled loop coordinate columns; preserve all other bytes."""
     lookup, loop, observed = validate_target(peptide, target, lines, mapping)
     index, chain, result, changed = peptide.index, target["chain"], [], 0
@@ -435,6 +590,7 @@ def graft_lines(lines: list[str], peptide: Peptide, coordinates: np.ndarray, tar
                 if key[0] == residue:
                     actual[i] = lookup[chain, *key].xyz / 10.0
     before_rounding = loop_geometry_report(peptide, actual, loop, serialized=False)
+    before_sterics = steric_report(actual, sterics) if sterics is not None else None
     for line in lines:
         atom = parse_pdb_atom_line(line)
         if atom is not None and atom.chain == chain and atom.resseq in loop:
@@ -457,10 +613,15 @@ def graft_lines(lines: list[str], peptide: Peptide, coordinates: np.ndarray, tar
     if not observed_unchanged:
         raise ValueError("Non-loop or observed PDB bytes changed")
     after_rounding = loop_geometry_report(peptide, actual, loop, serialized=True)
-    return result, {"observed_atoms_preserved": observed, "all_nonloop_lines_byte_identical": observed_unchanged,
-                    "replaced_modeled_atom_count": changed, "before_pdb_rounding": before_rounding,
-                    "after_pdb_rounding": after_rounding,
-                    "pass": bool(before_rounding["pass"] and after_rounding["pass"])}
+    report = {"observed_atoms_preserved": observed, "all_nonloop_lines_byte_identical": observed_unchanged,
+              "replaced_modeled_atom_count": changed, "before_pdb_rounding": before_rounding,
+              "after_pdb_rounding": after_rounding,
+              "pass": bool(before_rounding["pass"] and after_rounding["pass"])}
+    if sterics is not None:
+        after_sterics = steric_report(actual, sterics)
+        report.update({"steric_before_pdb_rounding": before_sterics, "steric_after_pdb_rounding": after_sterics,
+                       "pass": bool(report["pass"] and before_sterics["pass"] and after_sterics["pass"])})
+    return result, report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -471,12 +632,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "results/atomistic/loop_closure")
     parser.add_argument("--offline", action="store_true", help="Recorded; this script never uses network access")
+    parser.add_argument("--steric-aware", action="store_true", help="Opt in to the fixed gross-clash preparation objective and final screen")
     args = parser.parse_args(argv)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     inputs = {"donor_json": args.input, "pdb": args.pdb, "source_csv": args.source_csv, "config": args.config, "script": Path(__file__)}
     report = {"status": "unqualified_input", "qualified_for_md": False,
               "scope": "technical loop geometry only; no force-field preparation, native-conformation validation or MD",
               "offline": args.offline, "policy": POLICY}
+    if args.steric_aware:
+        report["steric_policy"] = STERIC_POLICY
     try:
         report["input_sha256"] = {name: sha256_file(path) for name, path in inputs.items()}
         json.loads(args.config.read_text())  # Provenance pin; algorithm policy is fixed in source.
@@ -493,8 +657,9 @@ def main(argv: list[str] | None = None) -> int:
         mapping = read_repair_mapping(args.source_csv)
         lookup, _, _ = validate_target(peptide, target, lines, mapping)
         anchors = np.array([lookup[target["chain"], *peptide.keys[i]].xyz / 10.0 for i in anchor_indices(peptide)])
-        fit = close_loop(peptide, anchors)
-        output, graft = graft_lines(lines, peptide, fit.pop("coordinates_nm"), target, mapping)
+        options = {"sterics": build_steric_context(peptide, target, lines, mapping)} if args.steric_aware else {}
+        fit = close_loop(peptide, anchors, **options)
+        output, graft = graft_lines(lines, peptide, fit.pop("coordinates_nm"), target, mapping, **options)
         candidate = args.output_dir / "candidate_capped_heavy.pdb"
         candidate.write_bytes("".join(output).encode("ascii"))
         passed = fit["anchor_fit"]["pass"] and fit["donor_invariance"]["pass"] and graft["pass"]

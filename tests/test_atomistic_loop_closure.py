@@ -2,6 +2,7 @@
 
 import copy
 import csv
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -220,7 +221,8 @@ def test_impossible_anchors_are_unqualified_even_with_finite_solver_result(pepti
     assert report["qualified_for_md"] is False
 
 
-def test_cli_retains_failed_candidate_without_md_qualification(tmp_path, monkeypatch, peptide):
+@pytest.mark.parametrize("steric_aware", [False, True])
+def test_cli_retains_failed_candidate_without_md_qualification(tmp_path, monkeypatch, peptide, steric_aware):
     target, lines, mapping = target_fixture(peptide)
     request = {"schema_version": 1, "coordinate_unit": "nm", "donor": synthetic_donor(), "target": target}
     source, pdb, config, csv_path = (tmp_path / name for name in ("donor.json", "input.pdb", "config.json", "mapping.csv"))
@@ -236,15 +238,32 @@ def test_cli_retains_failed_candidate_without_md_qualification(tmp_path, monkeyp
                              **dict(zip(("x", "y", "z"), row["xyz"], strict=True))})
     bad = peptide.coordinates_nm.copy()
     bad[peptide.index[342, "N"]] += [0.1, 0.1, 0.1]
-    monkeypatch.setattr(lc, "close_loop", lambda *_: {"coordinates_nm": bad, "anchor_fit": {"pass": True},
-                                                    "donor_invariance": {"pass": False}, "qualified_for_md": False})
+    captured = {}
+
+    def fake_fit(*_, **options):
+        captured.update(options)
+        return {"coordinates_nm": bad, "anchor_fit": {"pass": True},
+                "donor_invariance": {"pass": False}, "qualified_for_md": False}
+
+    monkeypatch.setattr(lc, "close_loop", fake_fit)
     output = tmp_path / "new_output"
     result = lc.main(["--input", str(source), "--pdb", str(pdb), "--source-csv", str(csv_path),
-                      "--config", str(config), "--output-dir", str(output), "--offline"])
+                      "--config", str(config), "--output-dir", str(output), "--offline",
+                      *(["--steric-aware"] if steric_aware else [])])
     assert result == 2
     report = json.loads((output / "loop_closure.json").read_text())
     assert report["status"] == "unqualified_loop_geometry"
     assert report["qualified_for_md"] is False
+    if steric_aware:
+        assert report["steric_policy"] == lc.STERIC_POLICY
+        assert report["steric_policy"]["minimum_separation_nm"] == 0.20
+        assert report["steric_policy"]["periodic_box"] is False
+        assert "steric_after_pdb_rounding" in report["graft"]
+        assert isinstance(captured["sterics"], lc.StericContext)
+    else:
+        assert "steric_policy" not in report
+        assert "steric_after_pdb_rounding" not in report["graft"]
+        assert not captured
     assert (output / "candidate_capped_heavy.pdb").is_file()
     with pytest.raises(FileExistsError):
         lc.main(["--input", str(source), "--pdb", str(pdb), "--source-csv", str(csv_path),
@@ -263,3 +282,98 @@ def test_actual_explicit_donor_inventory_if_available():
     assert {(t.residue, t.kind) for t in torsions if t.kind == "phi"}.isdisjoint({(345, "phi"), (352, "phi")})
     changed = lc.apply_torsions(peptide, torsions, np.random.default_rng(4).normal(0, 0.3, len(torsions)))
     assert lc.invariance_report(peptide, changed)["pass"]
+
+
+def add_environment_atom(lines, mapping, xyz_nm, *, residue=361, status="repaired_missing_heavy_atom"):
+    atom = AtomRecord("ATOM", 9000 + residue, "OG1", "", "THR", "B", residue, "", *(np.asarray(xyz_nm) * 10), element="O")
+    line = format_atom(atom, atom.serial) + "\r\n"
+    lines.insert(-1, line)
+    mapping["B", residue, "OG1"] = {"residue_name": "THR", "xyz": lc.parse_pdb_atom_line(line).xyz, "source_status": status}
+
+
+@pytest.mark.parametrize("status", ["observed_input", "repaired_missing_heavy_atom"])
+def test_opt_in_rejects_loop_environment_clash_and_keeps_all_fixed_bytes(peptide, status):
+    target, lines, mapping = target_fixture(peptide)
+    add_environment_atom(lines, mapping, peptide.coordinates_nm[peptide.index[343, "N"]] + [0.07, 0, 0], status=status)
+    context = lc.build_steric_context(peptide, target, lines, mapping)
+    _, legacy = lc.graft_lines(lines, peptide, peptide.coordinates_nm, target, mapping)
+    output, guarded = lc.graft_lines(lines, peptide, peptide.coordinates_nm, target, mapping, sterics=context)
+    assert legacy["pass"]  # Default retains the earlier geometry-only contract.
+    assert not guarded["pass"]
+    screen = guarded["steric_after_pdb_rounding"]
+    clash = next(row for row in screen["unresolved_pairs"]
+                 if row["first"] == ["B", 343, "ALA", "N"] and row["second"] == ["B", 361, "THR", "OG1"])
+    assert clash["distance_nm"] == pytest.approx(0.07, abs=0.0001)
+    assert clash["second_source_status"] == status
+    assert guarded["all_nonloop_lines_byte_identical"]
+    for before, after in zip(lines, output, strict=True):
+        atom = lc.parse_pdb_atom_line(before)
+        if atom is None or atom.resseq not in target["loop_residues"]:
+            assert before == after
+
+
+def test_bond_and_1_3_exclusions_include_junctions_but_not_1_4(peptide):
+    target, lines, mapping = target_fixture(peptide)
+    context = lc.build_steric_context(peptide, target, lines, mapping)
+    loop = {key: i for i, key in enumerate(context.loop_atom_keys)}
+    env = {key: i for i, key in enumerate(context.environment_atom_keys)}
+    n342 = loop["B", 342, "ALA", "N"]
+    cb342 = loop["B", 342, "ALA", "CB"]
+    assert env["B", 341, "ALA", "C"] in context.environment_excluded_indices[n342]
+    assert env["B", 341, "ALA", "CA"] in context.environment_excluded_indices[n342]
+    assert env["B", 341, "ALA", "O"] in context.environment_excluded_indices[n342]
+    assert env["B", 341, "ALA", "N"] not in context.environment_excluded_indices[n342]
+    assert env["B", 341, "ALA", "C"] not in context.environment_excluded_indices[cb342]
+    assert not context.internal_allowed[n342, loop["B", 342, "ALA", "CA"]]
+    assert not context.internal_allowed[n342, cb342]
+    assert context.internal_allowed[n342, loop["B", 342, "ALA", "O"]]
+    report = lc.steric_report(peptide.coordinates_nm, context)
+    assert report["pass"]  # Short covalent bonds are not reported as clashes.
+    assert report["excluded_bonded_or_1_3_environment_pairs"] == 8
+    assert report["checked_internal_pairs"] == 146
+    with pytest.raises(ValueError):
+        context.environment_coordinates_nm[0, 0] = 123
+
+
+def test_reports_all_internal_clashes_not_only_nearest_pair(peptide):
+    target, lines, mapping = target_fixture(peptide)
+    context = lc.build_steric_context(peptide, target, lines, mapping)
+    xyz = peptide.coordinates_nm.copy()
+    for residue in (342, 343, 345):
+        xyz[peptide.index[residue, "CB"]] = [20.0, 20.0, 20.0]
+    report = lc.steric_report(xyz, context)
+    zero_pairs = [row for row in report["unresolved_pairs"] if row["kind"] == "loop_internal" and row["distance_nm"] == 0]
+    assert len(zero_pairs) == 3
+    assert not report["pass"]
+    assert np.isfinite(lc.steric_residual(xyz, context)).all()
+
+
+def test_steric_screen_and_objective_are_rigid_rotation_invariant(peptide):
+    target, lines, mapping = target_fixture(peptide)
+    add_environment_atom(lines, mapping, peptide.coordinates_nm[peptide.index[343, "N"]] + [0.07, 0, 0])
+    context = lc.build_steric_context(peptide, target, lines, mapping)
+    rotation = Rotation.from_rotvec([0.3, -0.7, 1.2]).as_matrix()
+    translation = np.array([3, -2, 7])
+    environment = context.environment_coordinates_nm @ rotation + translation
+    rotated = replace(context, environment_coordinates_nm=environment, environment_tree=lc.cKDTree(environment))
+    xyz = peptide.coordinates_nm @ rotation + translation
+    first, second = lc.steric_report(peptide.coordinates_nm, context), lc.steric_report(xyz, rotated)
+    assert first["unresolved_count"] == second["unresolved_count"]
+    assert [(r["first"], r["second"]) for r in first["unresolved_pairs"]] == [(r["first"], r["second"]) for r in second["unresolved_pairs"]]
+    np.testing.assert_allclose(lc.steric_residual(peptide.coordinates_nm, context), lc.steric_residual(xyz, rotated), atol=2e-13)
+
+
+def test_steric_objective_resolves_synthetic_clash_with_same_geometry_gates(peptide):
+    target, lines, mapping = target_fixture(peptide)
+    add_environment_atom(lines, mapping, peptide.coordinates_nm[peptide.index[343, "CB"]] + [0, 0, 0.18])
+    context = lc.build_steric_context(peptide, target, lines, mapping)
+    assert not lc.steric_report(peptide.coordinates_nm, context)["pass"]
+    lookup, _, _ = lc.validate_target(peptide, target, lines, mapping)
+    anchors = np.array([lookup["B", *peptide.keys[i]].xyz / 10 for i in lc.anchor_indices(peptide)])
+    fit = lc.close_loop(peptide, anchors, max_nfev=50, sterics=context)
+    assert fit["anchor_fit"]["pass"]
+    assert fit["donor_invariance"]["pass"]
+    assert fit["starts"][fit["selected_start"]]["steric_screen"]["pass"]
+    _, graft = lc.graft_lines(lines, peptide, fit["coordinates_nm"], target, mapping, sterics=context)
+    assert graft["pass"], graft
+    assert fit["qualified_for_md"] is False

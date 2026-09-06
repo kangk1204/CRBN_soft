@@ -119,6 +119,16 @@ complete Amber topology and coordinates from the candidate and rerun the
 following preparation stages. Ligand/construct differences in the template and
 alternative loop models remain necessary considerations for scientific use.
 
+The optional `--steric-aware` flag adds a coarse heavy-atom clash objective and
+screen to the same bounded closure. It includes loop–environment and internal
+loop contacts, excluding directly bonded and 1–3 pairs. Every non-loop heavy
+atom stays fixed during closure, whether observed or modeled. A fixed 0.20 nm
+minimum separation is tested after fitting and PDB rounding; the objective
+uses a 0.22 nm margin. All unresolved pairs and the policy are reported. This
+screen addresses gross overlap, not atom-specific van der Waals energetics or
+full force-field qualification. The original default closure remains available
+for reproducing its earlier output.
+
 LEaP-generated hydrogens also need geometric checks. Reconstruct all non-Gly
 C-alpha hydrogens from the three heavy-bond directions and the topology's
 equilibrium C–H length. This changes only newly added HA coordinates. Next,
