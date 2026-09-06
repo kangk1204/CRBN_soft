@@ -83,6 +83,42 @@ side chain containing observed atoms or an unsupported additional stereocenter.
 A sign correction can leave a nearly planar center or introduce a clash;
 post-minimization stereochemistry and geometry checks remain required.
 
+### Optional template loop closure
+
+When a restored internal loop has invalid geometry, an observed loop template
+can be fitted before rebuilding the Amber system. The closure prototype accepts
+a separately verified donor-coordinate JSON, the target heavy-atom PDB and its
+observed/modeled atom inventory:
+
+```bash
+python scripts/atomistic_loop_closure.py --config scripts/atomistic_config.json \
+  --input donor_loop_coordinates.json --pdb capped_heavy.pdb \
+  --source-csv atom_residue_mapping.csv \
+  --output-dir results/atomistic/loop_closure --offline
+```
+
+The JSON schema is `schema_version: 1`, `coordinate_unit: "nm"`. Its `donor`
+contains `pdb_id`, `label_asym_id`, `source_sha256`, an explicit `canonical_mapping`,
+`additional_bonds` and `atoms` with canonical residue, label sequence ID, residue
+name, atom name and `xyz_nm`. Its `target` declares the chain, internal loop
+residues and two flanking anchor residues. This self-contained coordinate JSON
+is hashed; extraction from the stated CIF must be verified separately. A source
+identifier alone does not certify coordinate provenance.
+
+The algorithm varies backbone phi/psi and global pose while retaining Pro phi,
+peptide omega, sidechain geometry and covalent bond geometry. Both anchors use
+N/CA/C/O. Only modeled loop coordinate columns may change. It tests the actual
+target junction lengths, angles and peptide planes after reinserting the fixed
+target flanks and after PDB rounding. Solver convergence and the independent
+geometry gates are reported separately; a bounded solver may produce an
+acceptable preparation candidate without establishing a converged optimum.
+
+A `technical_loop_geometry_pass` does not qualify MD. It does not certify all
+steric contacts, Ramachandran preferences or force-field relaxation. Rebuild the
+complete Amber topology and coordinates from the candidate and rerun the
+following preparation stages. Ligand/construct differences in the template and
+alternative loop models remain necessary considerations for scientific use.
+
 LEaP-generated hydrogens also need geometric checks. Reconstruct all non-Gly
 C-alpha hydrogens from the three heavy-bond directions and the topology's
 equilibrium C–H length. This changes only newly added HA coordinates. Next,
