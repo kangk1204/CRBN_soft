@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fixed-heavy hydrogen/solvent minimization for atomistic CRBN preparation.
 
-This stage is not MD and does not qualify production dynamics.  It keeps all
-solute heavy atoms fixed by setting their OpenMM particle masses to zero, then
-minimizes only hydrogens, solvent, and ions from a supplied Amber topology and
-coordinate set whose heavy geometry has already been prepared separately.
+This stage is not MD and does not qualify production dynamics. By default all
+solute heavy atoms are fixed by setting their OpenMM particle masses to zero.
+With an observed-heavy inventory, only those observed atoms are fixed and
+modeled heavy atoms also relax. Both modes minimize hydrogens, solvent and ions;
+the complete post-preparation geometry qualification remains a separate step.
 """
 from __future__ import annotations
 
@@ -446,7 +447,7 @@ def run(
         "alpha_ha_stereochemistry": stereo,
         "beta_chirality": beta_stereo,
         "restart_roundtrip": restart_roundtrip,
-        "heavy_clash_gate": "not evaluated as pass/fail in this H/solvent-only stage; modeled heavy clashes are handled by later staged preparation",
+        "heavy_clash_gate": "not evaluated as pass/fail in this preparation step; the complete downstream qualification must check heavy-atom clashes",
     }
     write_json(output_dir / "relax_atomistic_hydrogens.json", report)
     return report
