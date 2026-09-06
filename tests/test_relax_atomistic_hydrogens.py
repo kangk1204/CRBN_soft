@@ -137,3 +137,92 @@ def test_set_zero_masses_preserves_fixed_particle_under_nonzero_force_reference(
         del context
         del integrator
     assert pos[0, 0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_observed_heavy_mode_fixes_strict_subset_and_makes_modeled_heavy_mobile(tmp_path):
+    residue = FakeResidue("ALA", 0, "A", 1)
+    FakeAtom("N", residue, 0, "N")
+    FakeAtom("CA", residue, 1, "C")
+    FakeAtom("C", residue, 2, "C")
+    FakeAtom("CB", residue, 3, "C")
+    FakeAtom("HA", residue, 4, "H")
+    topology = FakeTopology([residue])
+    masks = relax_h.classify_mobile_and_fixed_atoms(topology)
+    path = tmp_path / "observed.json"
+    path.write_text('{"observed_heavy_indices": [0, 1]}', encoding="utf-8")
+
+    updated = relax_h.apply_observed_heavy_mode(masks, path)
+
+    assert updated["mode"] == "fixed_observed_heavy"
+    assert updated["fixed_solute_heavy"] == [0, 1]
+    assert updated["modeled_solute_heavy"] == [2, 3]
+    assert updated["mobile"] == [2, 3, 4]
+
+    path.write_text('{"observed_heavy_indices": [0, 1, 2, 3]}', encoding="utf-8")
+    with pytest.raises(ValueError, match="strict subset"):
+        relax_h.apply_observed_heavy_mode(masks, path)
+
+    path.write_text('{"observed_heavy_indices": [4]}', encoding="utf-8")
+    with pytest.raises(ValueError, match="solute heavy"):
+        relax_h.apply_observed_heavy_mode(masks, path)
+
+
+def test_alpha_gate_fails_when_movable_modeled_heavy_inverts_post_geometry():
+    residue = make_residue("VAL", [("N", "N"), ("CA", "C"), ("C", "C"), ("CB", "C"), ("HA", "H")])
+    topology = FakeTopology([residue])
+    initial = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.2],
+            [0.0, 0.0, -0.2],
+        ]
+    )
+    final = initial.copy()
+    final[3] = [0.0, 0.0, -0.2]
+    final[4] = [0.0, 0.0, 0.2]
+
+    report = relax_h.alpha_ha_stereochemistry(topology, initial, final)
+
+    assert report["status"] == "fail"
+    assert any("post heavy" in failure for failure in report["failures"])
+
+
+def test_beta_chirality_checks_initial_and_post_thr_ile_geometry():
+    residue = make_residue("ILE", [("CA", "C"), ("CB", "C"), ("CG1", "C"), ("CG2", "C")])
+    topology = FakeTopology([residue])
+    initial = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.2],
+        ]
+    )
+    assert relax_h.beta_chirality(topology, initial, initial)["status"] == "pass"
+
+    final = initial.copy()
+    final[3] = [0.0, 0.0, -0.2]
+    report = relax_h.beta_chirality(topology, initial, final)
+    assert report["status"] == "fail"
+    assert "post THR/ILE" in report["failures"][0]
+    near_flat = initial.copy()
+    near_flat[3, 2] = 1e-5
+    repaired = relax_h.beta_chirality(topology, near_flat, initial)
+    assert repaired["status"] == "pass"
+    assert repaired["examples"][0]["initial_valid"] is False
+    assert relax_h.beta_chirality(topology, near_flat, near_flat)["status"] == "fail"
+
+
+def test_observed_cli_inventory_binds_topology_hash(tmp_path):
+    import json
+    top = tmp_path / "top.prmtop"
+    top.write_text("topology")
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps({"status": "pass", "sources": {
+        "prmtop": {"sha256": relax_h.sha256_file(top)}}}))
+    relax_h.validate_observed_source(inventory, top)
+    top.write_text("changed topology")
+    with pytest.raises(ValueError, match="topology hash mismatch"):
+        relax_h.validate_observed_source(inventory, top)

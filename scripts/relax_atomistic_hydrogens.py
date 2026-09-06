@@ -89,6 +89,7 @@ def is_water_or_ion_residue(residue_name: str) -> bool:
 
 
 def classify_mobile_and_fixed_atoms(topology: Any) -> dict[str, Any]:
+    solute_heavy: list[int] = []
     fixed_solute_heavy: list[int] = []
     mobile: list[int] = []
     hydrogens: list[int] = []
@@ -109,16 +110,85 @@ def classify_mobile_and_fixed_atoms(topology: Any) -> dict[str, Any]:
             hydrogens.append(atom.index)
             mobile.append(atom.index)
         else:
+            solute_heavy.append(atom.index)
             fixed_solute_heavy.append(atom.index)
     if unknown_solute:
         raise ValueError(f"unknown solute elements in non-water/non-ion residues: {unknown_solute[:10]}")
     return {
+        "solute_heavy": solute_heavy,
         "fixed_solute_heavy": fixed_solute_heavy,
         "mobile": mobile,
         "hydrogens": hydrogens,
         "solvent_or_ions": solvent_or_ions,
         "atom_count": len(atoms),
     }
+
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def validate_observed_source(path: Path, prmtop: Path) -> None:
+    payload = read_json(path)
+    if not isinstance(payload, dict) or payload.get("status") != "pass":
+        raise ValueError("Observed-heavy CLI input requires a passing preparation inventory")
+    expected = payload.get("sources", {}).get("prmtop", {}).get("sha256")
+    if expected != sha256_file(prmtop):
+        raise ValueError("Observed-heavy inventory topology hash mismatch")
+
+
+def load_observed_heavy_indices(path: Path, solute_heavy: list[int]) -> list[int]:
+    payload = read_json(path)
+    if isinstance(payload, list):
+        raw = payload
+        label = "top_level_list"
+    elif isinstance(payload, dict):
+        for key in ("observed_heavy_indices", "restrain_indices", "indices"):
+            if key in payload:
+                raw = payload[key]
+                label = key
+                break
+        else:
+            raise ValueError("observed-heavy JSON must contain observed_heavy_indices, restrain_indices, or indices")
+    else:
+        raise ValueError("observed-heavy JSON must be a list or object")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{label} must be a non-empty list")
+    solute_heavy_set = set(solute_heavy)
+    observed: list[int] = []
+    invalid: list[Any] = []
+    for value in raw:
+        if not isinstance(value, int) or isinstance(value, bool):
+            invalid.append(value)
+            continue
+        if value not in solute_heavy_set:
+            invalid.append(value)
+            continue
+        observed.append(value)
+    if invalid:
+        raise ValueError(f"observed-heavy indices must be a strict subset of solute heavy atoms; invalid examples: {invalid[:10]}")
+    if len(set(observed)) != len(observed):
+        raise ValueError(f"{label} contains duplicate atom indices")
+    if len(observed) >= len(solute_heavy):
+        raise ValueError("observed-heavy mode requires a strict subset so modeled solute heavy atoms can relax")
+    return sorted(observed)
+
+
+def apply_observed_heavy_mode(masks: dict[str, Any], observed_heavy_json: Path | None) -> dict[str, Any]:
+    if observed_heavy_json is None:
+        masks = dict(masks)
+        masks["mode"] = "fixed_all_solute_heavy"
+        masks["modeled_solute_heavy"] = []
+        return masks
+    observed = load_observed_heavy_indices(observed_heavy_json, masks["solute_heavy"])
+    modeled = sorted(set(masks["solute_heavy"]) - set(observed))
+    mobile = sorted(set(masks["mobile"]) | set(modeled))
+    updated = dict(masks)
+    updated["mode"] = "fixed_observed_heavy"
+    updated["fixed_solute_heavy"] = observed
+    updated["modeled_solute_heavy"] = modeled
+    updated["mobile"] = mobile
+    return updated
 
 
 def set_zero_masses(system: Any, indices: list[int]) -> list[float]:
@@ -145,38 +215,86 @@ def alpha_ha_stereochemistry(topology: Any, initial_nm: np.ndarray, final_nm: np
         atoms = {atom.name: atom.index for atom in residue.atoms()}
         if residue.name == "GLY" or not {"N", "CA", "C", "CB"} <= set(atoms):
             continue
+        residue_name = residue_label(next(residue.atoms()))
         ha_name = "HA" if "HA" in atoms else None
         if ha_name is None:
-            failures.append(f"missing HA for alpha stereochemistry at {residue_label(next(residue.atoms()))}")
+            failures.append(f"missing HA for alpha stereochemistry at {residue_name}")
             continue
         n, ca, c, cb, ha = (atoms[name] for name in ("N", "CA", "C", "CB", ha_name))
         heavy_initial = signed_volume(initial[n], initial[ca], initial[c], initial[cb])
+        heavy_post = signed_volume(final[n], final[ca], final[c], final[cb])
         ha_initial = signed_volume(initial[n], initial[ca], initial[c], initial[ha])
         ha_post = signed_volume(final[n], final[ca], final[c], final[ha])
         row = {
-            "residue": residue_label(next(residue.atoms())),
+            "residue": residue_name,
             "heavy_initial_volume_nm3": heavy_initial,
+            "heavy_post_volume_nm3": heavy_post,
             "ha_initial_volume_nm3": ha_initial,
             "ha_post_volume_nm3": ha_post,
             "heavy_initial_valid_L": heavy_initial > CHIRALITY_MIN_VOLUME_NM3,
+            "heavy_post_valid_L": heavy_post > CHIRALITY_MIN_VOLUME_NM3,
             "ha_post_opposite_cb": ha_post < -CHIRALITY_MIN_VOLUME_NM3,
         }
         rows.append(row)
         if not row["heavy_initial_valid_L"]:
-            failures.append(f"initial heavy N-CA-C-CB chirality not positive/nonplanar at {row['residue']}: {heavy_initial:.6g} nm^3")
+            failures.append(f"initial heavy N-CA-C-CB chirality not positive/nonplanar at {residue_name}: {heavy_initial:.6g} nm^3")
+        if not row["heavy_post_valid_L"]:
+            failures.append(f"post heavy N-CA-C-CB chirality not positive/nonplanar at {residue_name}: {heavy_post:.6g} nm^3")
         if not row["ha_post_opposite_cb"]:
-            failures.append(f"post HA is not opposite CB at {row['residue']}: {ha_post:.6g} nm^3")
+            failures.append(f"post HA is not opposite CB at {residue_name}: {ha_post:.6g} nm^3")
     if not rows:
         failures.append("No complete protein alpha/HA centers were evaluated")
     return {
         "status": "pass" if not failures else "fail",
         "checked_residue_count": len(rows),
         "minimum_abs_volume_nm3": CHIRALITY_MIN_VOLUME_NM3,
-        "expected": "initial N-CA-C-CB volume > +1e-4 nm^3 and post N-CA-C-HA volume < -1e-4 nm^3",
+        "expected": "initial and post N-CA-C-CB volume > +1e-4 nm^3; post N-CA-C-HA volume < -1e-4 nm^3",
         "failures": failures,
         "examples": rows[:30],
     }
 
+
+def beta_chirality(topology: Any, initial_nm: np.ndarray, final_nm: np.ndarray) -> dict[str, Any]:
+    failures: list[str] = []
+    rows: list[dict[str, Any]] = []
+    initial = np.asarray(initial_nm, dtype=float)
+    final = np.asarray(final_nm, dtype=float)
+    specs = {"THR": ("OG1", "CG2"), "ILE": ("CG1", "CG2")}
+    for residue in topology.residues():
+        residue_type = residue.name.upper()
+        if residue_type not in specs:
+            continue
+        atoms = {atom.name: atom.index for atom in residue.atoms()}
+        x_name, cg2_name = specs[residue_type]
+        residue_name = residue_label(next(residue.atoms()))
+        required = {"CA", "CB", x_name, cg2_name}
+        if not required <= set(atoms):
+            failures.append(f"missing THR/ILE Cbeta stereochemistry atoms at {residue_name}")
+            continue
+        ca, cb, x, cg2 = (atoms[name] for name in ("CA", "CB", x_name, cg2_name))
+        initial_volume = signed_volume(initial[ca], initial[cb], initial[x], initial[cg2])
+        post_volume = signed_volume(final[ca], final[cb], final[x], final[cg2])
+        row = {
+            "residue": residue_name,
+            "atom_order": ["CA", "CB", x_name, cg2_name],
+            "initial_volume_nm3": initial_volume,
+            "post_volume_nm3": post_volume,
+            "initial_valid": initial_volume > CHIRALITY_MIN_VOLUME_NM3,
+            "post_valid": post_volume > CHIRALITY_MIN_VOLUME_NM3,
+        }
+        rows.append(row)
+        if initial_volume <= 0:
+            failures.append(f"initial THR/ILE Cbeta chirality has a nonpositive sign at {residue_name}: {initial_volume:.6g} nm^3")
+        if not row["post_valid"]:
+            failures.append(f"post THR/ILE Cbeta chirality not positive/nonplanar at {residue_name}: {post_volume:.6g} nm^3")
+    return {
+        "status": "pass" if not failures else "fail",
+        "checked_residue_count": len(rows),
+        "minimum_abs_volume_nm3": CHIRALITY_MIN_VOLUME_NM3,
+        "expected": "initial THR/ILE Cbeta sign positive; post volume > +1e-4 nm^3; initial nonplanarity is reported separately because this preparation can repair modeled branches",
+        "failures": failures,
+        "examples": rows[:30],
+    }
 
 def finite_geometry(positions_nm: np.ndarray, box_nm: np.ndarray | None) -> dict[str, Any]:
     positions = np.asarray(positions_nm, dtype=float)
@@ -209,6 +327,7 @@ def run(
     platform_name: str = "OpenCL",
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     tolerance: float = DEFAULT_TOLERANCE,
+    observed_heavy_json: Path | None = None,
 ) -> dict[str, Any]:
     from openmm import Context, LocalEnergyMinimizer, Platform, VerletIntegrator, app, unit
 
@@ -220,6 +339,9 @@ def run(
         raise ValueError("Hydrogen minimization output directory must be new or empty")
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {"prmtop": prmtop, "inpcrd": inpcrd, "prep": prep, "script": Path(__file__).resolve()}
+    if observed_heavy_json is not None:
+        paths["observed_heavy_json"] = observed_heavy_json
+        validate_observed_source(observed_heavy_json, prmtop)
     start_snapshot = input_snapshot(paths)
 
     coordinates = app.AmberInpcrdFile(str(inpcrd))
@@ -235,7 +357,7 @@ def run(
     atoms = list(amber.topology.atoms())
     if positions_nm.shape != (len(atoms), 3):
         raise ValueError("Amber coordinate count does not match topology atom count")
-    masks = classify_mobile_and_fixed_atoms(amber.topology)
+    masks = apply_observed_heavy_mode(classify_mobile_and_fixed_atoms(amber.topology), observed_heavy_json)
 
     system = amber.createSystem(
         nonbondedMethod=app.PME,
@@ -270,12 +392,14 @@ def run(
 
     fixed_delta = max_delta_nm(initial_positions, final_positions, masks["fixed_solute_heavy"])
     stereo = alpha_ha_stereochemistry(amber.topology, initial_positions, final_positions)
+    beta_stereo = beta_chirality(amber.topology, initial_positions, final_positions)
     finite_energies = bool(np.isfinite(initial_energy) and np.isfinite(final_energy))
     end_changed = changed_inputs(start_snapshot)
     status = "hydrogen_minimization_complete" if (
         finite_energies
         and fixed_delta <= FIXED_HEAVY_TOLERANCE_NM
         and stereo["status"] == "pass"
+        and beta_stereo["status"] == "pass"
         and not end_changed
     ) else "failed"
 
@@ -295,7 +419,7 @@ def run(
     }
     report = {
         "status": status,
-        "scope": "fixed-heavy hydrogen/solvent preparation minimization only; no velocities, dynamics, CMMotionRemover, barostat, or production-readiness claim",
+        "scope": "modeled_atoms_and_solvent_preparation" if observed_heavy_json is not None else "fixed-heavy hydrogen/solvent preparation minimization only; no velocities, dynamics, CMMotionRemover, barostat, or production-readiness claim",
         "md_qualified": False,
         "production_ready": False,
         "sources_start": start_snapshot,
@@ -305,7 +429,10 @@ def run(
         "platform": {"requested": platform_name, "properties": properties},
         "minimizer": {"algorithm": "OpenMM LocalEnergyMinimizer", "tolerance": tolerance, "max_iterations": max_iterations},
         "mask": {
+            "mode": masks["mode"],
+            "solute_heavy_count": len(masks["solute_heavy"]),
             "fixed_solute_heavy_count": len(masks["fixed_solute_heavy"]),
+            "modeled_solute_heavy_count": len(masks["modeled_solute_heavy"]),
             "mobile_count": len(masks["mobile"]),
             "hydrogen_count": len(masks["hydrogens"]),
             "solvent_or_ion_count": len(masks["solvent_or_ions"]),
@@ -317,6 +444,7 @@ def run(
         "energies_kj_mol": {"initial": initial_energy, "final": final_energy, "finite": finite_energies},
         "parameter_contract": {"status": zaff_contract["status"], "failures": zaff_contract["failures"]},
         "alpha_ha_stereochemistry": stereo,
+        "beta_chirality": beta_stereo,
         "restart_roundtrip": restart_roundtrip,
         "heavy_clash_gate": "not evaluated as pass/fail in this H/solvent-only stage; modeled heavy clashes are handled by later staged preparation",
     }
@@ -331,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prep", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--platform", default="OpenCL")
+    parser.add_argument("--observed-heavy-json", type=Path, help="Optional observed-heavy index JSON; fixes only this strict solute-heavy subset so modeled atoms can relax")
     parser.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE)
     parser.add_argument("--offline", action="store_true", help="Accepted for provenance; this runner performs local file/compute operations only")
@@ -347,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         platform_name=args.platform,
         max_iterations=args.max_iterations,
         tolerance=args.tolerance,
+        observed_heavy_json=args.observed_heavy_json,
     )
     print(json.dumps({"status": report["status"], "fixed_solute_heavy_max_delta_nm": report["mask"]["fixed_solute_heavy_max_delta_nm"]}, indent=2))
     return 0 if report["status"] == "hydrogen_minimization_complete" else 1

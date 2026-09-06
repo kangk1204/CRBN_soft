@@ -85,27 +85,39 @@ post-minimization stereochemistry and geometry checks remain required.
 
 LEaP-generated hydrogens also need geometric checks. Reconstruct all non-Gly
 C-alpha hydrogens from the three heavy-bond directions and the topology's
-equilibrium C–H length. This changes only newly added HA coordinates. Then
-minimize hydrogens, water and ions with every solute heavy atom fixed, before
-allowing protein heavy atoms to relax. Neither step changes the force field.
+equilibrium C–H length. This changes only newly added HA coordinates. Next,
+minimize modeled atoms, water and ions while keeping the observed solute heavy
+atoms fixed. This allows modeled heavy-atom clashes to relax without moving
+experimental coordinates. Neither step changes the force field.
 
 ```bash
 python scripts/atomistic_alpha_hydrogens.py \
   --prmtop results/atomistic/amber/solvated.prmtop \
   --inpcrd results/atomistic/amber/solvated.inpcrd \
   --output-dir results/atomistic/alpha_hydrogens
+python scripts/atomistic_preparation_handoff.py restraints \
+  --heavy-mapping results/atomistic/heavy_model/atom_residue_mapping.csv \
+  --amber-pdb results/atomistic/amber/amber_input_joint_renamed.pdb \
+  --prmtop results/atomistic/amber/solvated.prmtop \
+  --output results/atomistic/amber/observed_heavy_restraints.json
 python scripts/relax_atomistic_hydrogens.py \
   --prmtop results/atomistic/amber/solvated.prmtop \
   --inpcrd results/atomistic/alpha_hydrogens/alpha_hydrogen_repaired.inpcrd \
   --prep data/atomistic_parameters/ZAFF.prep \
-  --output-dir results/atomistic/hydrogen_minimized --platform OpenCL --offline
+  --observed-heavy-json results/atomistic/amber/observed_heavy_restraints.json \
+  --output-dir results/atomistic/hydrogen_minimized \
+  --max-iterations 1200 --platform OpenCL --offline
 ```
 
 Proceed only when `relax_atomistic_hydrogens.json` reports
 `hydrogen_minimization_complete`. This stage uses no bond constraints and no
-dynamics. It requires unchanged solute heavy coordinates and correct HA-side
-stereochemistry. Distorted modeled heavy atoms and heavy-atom clashes remain
-the responsibility of the next preparation stage.
+dynamics. It requires unchanged selected observed coordinates and correct
+post-minimization C-alpha, C-beta and HA stereochemistry. The inventory must be
+bound to the same topology hash. Omitting `--observed-heavy-json` fixes all
+solute heavy atoms; that diagnostic mode cannot resolve modeled heavy clashes.
+Initial near-planar C-beta geometry is recorded as a preparation defect and
+must meet the complete nonplanarity criterion after relaxation. A failed
+output remains unqualified; these commands do not guarantee a usable model.
 
 Build isolated CRBN with `--assembly isolated` and a separate output directory.
 Use the same corrected input and frozen measurement basis. Solvent and ions are
@@ -118,11 +130,6 @@ separately. The subsequent simulation replaces those preparation restraints
 with the six collective CRBN translation/rotation restraints.
 
 ```bash
-python scripts/atomistic_preparation_handoff.py restraints \
-  --heavy-mapping results/atomistic/heavy_model/atom_residue_mapping.csv \
-  --amber-pdb results/atomistic/amber/amber_input_joint_renamed.pdb \
-  --prmtop results/atomistic/amber/solvated.prmtop \
-  --output results/atomistic/amber/observed_heavy_restraints.json
 python scripts/relax_atomistic_preparation.py \
   --prmtop results/atomistic/amber/solvated.prmtop \
   --inpcrd results/atomistic/hydrogen_minimized/hydrogen_minimized.rst7 \
