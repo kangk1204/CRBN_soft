@@ -57,6 +57,7 @@ def test_tracked_release_surface_is_text_only_and_code_scoped():
         "README.md",
         "SECURITY.md",
         "environment.yml",
+        "requirements-trajectories.txt",
         "pytest.ini",
         "ruff.toml",
     }
