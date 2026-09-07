@@ -101,6 +101,8 @@ def test_real_pme_langevin_technical_loop_and_original_atom_outputs(tmp_path, mo
     assert result["chemical_review"]["status"] == "pending"
     assert result["completed_steps"] == 10
     assert result["platform"] == TEST_PLATFORM
+    assert result["precision"]["requested"] == "double"
+    assert result["precision"]["default_changed"] is False
     if TEST_PLATFORM in ("OpenCL", "CUDA", "HIP"):
         assert result["platform_properties"]["Precision"] == "double"
     assert result["benchmark"]["measured_steps"] == 5 and result["benchmark"]["steps_per_second"] > 0
@@ -468,3 +470,84 @@ def test_direct_chemical_engine_still_requires_pass_unless_explicitly_synthetic(
         pilot._run_engine(system, xyz, mapping, pilot.Settings(), tmp_path/"unqualified", model="isolated",
                           platform_name=TEST_PLATFORM, qualification={"chemical_review": {"status": "pending"}}, provenance={},
                           chemical_geometry=pilot.derive_chemical_geometry(topology))
+
+
+@pytest.mark.parametrize("platform", ["CPU", "Reference"])
+def test_mixed_precision_rejected_on_non_gpu_before_context(platform):
+    with pytest.raises(ValueError, match="GPU platform"):
+        pilot.platform_options(platform, "mixed")
+
+
+def test_gpu_precision_properties_are_explicit_and_read_back(monkeypatch):
+    class FakePlatform:
+        def getPropertyNames(self):
+            return ("Precision", "DeviceIndex")
+
+        def getPropertyValue(self, _context, _name):
+            return "mixed"
+
+    fake = FakePlatform()
+    monkeypatch.setattr(pilot.mm.Platform, "getPlatformByName", lambda _: fake)
+    platform, properties = pilot.platform_options("OpenCL", "mixed", "1")
+    assert platform is fake and properties == {"Precision": "mixed", "DeviceIndex": "1"}
+    assert pilot.precision_record(fake, None, "mixed")["effective"] == "mixed"
+    with pytest.raises(ValueError, match="Context reports"):
+        pilot.precision_record(fake, None, "double")
+    _, defaults = pilot.platform_options("OpenCL")
+    assert defaults == {"Precision": "double"}
+    with pytest.raises(ValueError, match="double or mixed"):
+        pilot.platform_options("OpenCL", "single")
+
+
+def test_shared_qualified_loader_is_context_free_and_keeps_input_gates(tmp_path, monkeypatch):
+    paths, qpath, qualification = qualified_files(tmp_path)
+    qualification["chemical_review"]["status"] = "pending"
+    qpath.write_text(json.dumps(qualification))
+    monkeypatch.setattr(pilot.mm, "Context", lambda *_args, **_kwargs: pytest.fail("Context must not be constructed"))
+    with pytest.raises(ValueError, match="chemical_review.status"):
+        pilot.load_qualified_inputs(paths["prmtop"], paths["inpcrd"], paths["mapping"], tmp_path/"no_config", qpath)
+
+
+def test_disable_pme_stream_is_opt_in_and_verified_from_context(monkeypatch):
+    class FakePlatform:
+        value = "true"
+
+        def getPropertyNames(self):
+            return ("Precision", "DisablePmeStream")
+
+        def getPropertyValue(self, _context, name):
+            return "double" if name == "Precision" else self.value
+
+    fake = FakePlatform()
+    monkeypatch.setattr(pilot.mm.Platform, "getPlatformByName", lambda _: fake)
+    _, defaults = pilot.platform_options("OpenCL")
+    assert defaults == {"Precision": "double"}
+    _, explicit = pilot.platform_options("OpenCL", disable_pme_stream=True)
+    assert explicit == {"Precision": "double", "DisablePmeStream": "true"}
+    record = pilot.precision_record(fake, None, "double", disable_pme_stream=True)
+    assert record["pme_stream"]["effective_disabled"] is True
+    assert record["pme_stream"]["override_applied"] is True
+    fake.value = "false"
+    with pytest.raises(ValueError, match="DisablePmeStream=true"):
+        pilot.precision_record(fake, None, "double", disable_pme_stream=True)
+
+
+def test_pme_stream_request_is_rejected_on_unsupported_platform():
+    with pytest.raises(ValueError, match="DisablePmeStream"):
+        pilot.platform_options("Reference", disable_pme_stream=True)
+
+
+@pytest.mark.parametrize("platform_name", ["OpenCL", "CUDA"])
+@pytest.mark.parametrize("precision,disable_pme_stream", [("double", False), ("mixed", False), ("mixed", True)])
+def test_real_gpu_pilot_rejects_unvalidated_precision_or_stream_before_context(
+        tmp_path, monkeypatch, platform_name, precision, disable_pme_stream):
+    topology, system, xyz, mapping = chemical_fixture()
+    monkeypatch.setattr(pilot, "platform_options", lambda *_a, **_kw: pytest.fail("Platform must not be resolved"))
+    output = tmp_path / "rejected"
+    with pytest.raises(ValueError, match="Real GPU technical pilots require"):
+        pilot._run_engine(system, xyz, mapping, pilot.Settings(), output,
+                          model="isolated", platform_name=platform_name,
+                          qualification={"chemical_review": {"status": pilot.CHEMICAL_REVIEW_PASS}},
+                          provenance={}, chemical_geometry=pilot.derive_chemical_geometry(topology),
+                          precision=precision, disable_pme_stream=disable_pme_stream)
+    assert not output.exists()

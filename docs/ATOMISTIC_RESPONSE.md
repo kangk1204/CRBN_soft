@@ -207,13 +207,80 @@ and do not qualify for the simulation runner. Preparation restraints are removed
 when constructing the technical simulation; all stereochemistry and peptide
 screens are checked again during its minimization and dynamics.
 
+## Technical integration and numerical precision
+
+For a qualified joint input, run one zero-force technical condition in a new
+output directory:
+
+```bash
+python scripts/run_atomistic_technical_pilot.py \
+  --prmtop results/atomistic/amber/solvated.prmtop \
+  --inpcrd results/atomistic/qualified/minimized.inpcrd \
+  --mapping results/atomistic/qualified/atomistic_mapping_with_initial.json \
+  --qualification results/atomistic/qualified/technical_qualification.json \
+  --config scripts/atomistic_config.json \
+  --model flexible --platform OpenCL --precision double \
+  --disable-pme-stream --device-index 0 --steps 10000 \
+  --max-wall-seconds 2500 --output-dir results/atomistic/technical_flexible \
+  --offline
+```
+
+Use `fixed` or `rigid` with the same joint input. `isolated` requires the
+separately prepared isolated topology, coordinates and qualification. The
+requested step count is a technical integration target; completing it does
+not establish equilibration or a response estimate. Each attempt retains its
+own wall budget, actual steps, geometry checks and Context properties.
+
+Real OpenCL/CUDA technical runs require double precision and explicit
+`--disable-pme-stream`. The default PME stream configuration produced
+inconsistent forces at identical coordinates in the tested OpenMM 8.5.2
+environment. The disabled-stream double configuration passed repeated
+same-coordinate, analytic gauge/force and boundary-condition comparisons.
+Mixed precision failed the frozen force-error criterion for the CRBN core.
+These are environment-specific numerical validation results; precision is
+read back from the actual Context. Diagnostic comparisons remain available in
+`benchmark_atomistic_precision.py` and do not change the production admission
+rules. A static or short-integration pass does not establish response convergence.
+
+## Salt and density preparation
+
+`prepare_atomistic_salt.py` replaces selected complete waters with NaCl pairs.
+It retains the existing neutralizing ions and uses the determinant of the
+actual input box to compute the nominal added salt concentration. Input
+topology, restart, mapping and ZAFF parameter paths must be supplied explicitly
+or through configuration. A missing ion type requires a vetted parameter
+template. The script checks retained-atom coordinates, solute charges/masses,
+bonded and nonbonded terms, histidine hydrogens and the Zn model. Salt insertion
+requires subsequent restrained minimization and a new hash-bound qualification.
+
+`run_atomistic_density_preparation.py` performs bounded zero-force NVT thermal
+preparation followed by NPT density preparation for all-massive `flexible` or
+`isolated` inputs. It requires the qualified salt/protonation manifest to bind
+the exact current topology, minimized restart and mapping hashes. GPU runs
+require `--precision double --disable-pme-stream`. Set `--nvt-steps`,
+`--npt-steps` and `--max-wall-seconds` explicitly. A repeated invocation in the
+same output directory resumes the committed checkpoint and its phase counts.
+Changing input, gauge or integrator settings is rejected.
+
+Restart generations retain immutable checkpoint, StateXML, diagnostics and
+trajectory payloads. The current pointer is published after its generation is
+complete; top-level CSV/NPZ files are previews. The NPT-to-NVT handoff transfers
+positions and box vectors to a new System. It does not transfer an NPT checkpoint
+to a different boundary model or issue an equilibrium certificate. Fixed and
+rigid DDB1 response conditions use NVT. Recalculate the final salt concentration
+from the accepted equilibrated box volume before interpreting the solvent model.
+
 ## Measurement and scientific acceptance
 
 With fixed unit direction `q`, measure `Q = q.T @ (x_core - x_reference)`.
 The scientific extension will apply the conjugate energy `-h*Q` at zero and
 both signs of two force magnitudes. One common force magnitude is fixed from
-the largest zero-force fluctuation among the three complex conditions before
-comparing their response. The present technical runner uses zero force only.
+the largest accepted zero-force standard deviation among the nine calibration
+replicas (three independent initializations for each of the three complex
+conditions) before comparing their response. Specifically,
+`h0 = 0.25*R*T/max(sqrt(sample_variance_Q))`; each variance is calculated within
+one replica. Replicate means are not pooled to inflate the fluctuation estimate.
+The technical runner uses zero force only.
 
 `atomistic_response_analysis.py` consumes a CSV with the columns `model`,
 `replicate`, `force_kj_mol_nm`, `time_ps` and `closure_nm`. It requires an explicit

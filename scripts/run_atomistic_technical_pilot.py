@@ -29,6 +29,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 GAS_CONSTANT = 0.00831446261815324  # kJ mol^-1 K^-1
 MODELS = ("flexible", "fixed", "rigid", "isolated")
+GPU_PLATFORMS = ("OpenCL", "CUDA", "HIP")
 CHEMICAL_REVIEW_PASS = "technical_chemistry_preparation_pass"
 MIN_SIGNED_VOLUME_NM3 = 1e-4
 PEPTIDE_BOUNDS_NM = (.11, .17)
@@ -389,17 +390,63 @@ class _DeadlineReporter(mm.MinimizationReporter):
         return False
 
 
+def platform_options(platform_name, precision="double", device_index=None, *, disable_pme_stream=False):
+    """Explicit opt-in mixed precision; never change a global platform default."""
+    if precision not in ("double", "mixed"):
+        raise ValueError("Precision must be double or mixed")
+    if precision == "mixed" and platform_name not in GPU_PLATFORMS:
+        raise ValueError("Mixed precision requires an OpenCL, CUDA or HIP GPU platform")
+    platform = mm.Platform.getPlatformByName(platform_name)
+    names = set(platform.getPropertyNames())
+    if platform_name in GPU_PLATFORMS and "Precision" not in names:
+        raise ValueError("Selected GPU platform does not expose a Precision property")
+    properties = {"Precision": precision} if "Precision" in names else {}
+    if device_index is not None:
+        if "DeviceIndex" not in names:
+            raise ValueError("Selected platform has no DeviceIndex property")
+        properties["DeviceIndex"] = str(device_index)
+    if disable_pme_stream:
+        if platform_name not in GPU_PLATFORMS or "DisablePmeStream" not in names:
+            raise ValueError("Selected GPU platform does not expose DisablePmeStream")
+        properties["DisablePmeStream"] = "true"
+    return platform, properties
+
+
+def precision_record(platform, context, requested, *, disable_pme_stream=False):
+    if "Precision" in platform.getPropertyNames():
+        effective = platform.getPropertyValue(context, "Precision")
+        if effective != requested:
+            raise ValueError(f"Requested precision {requested} but Context reports {effective}")
+        source = "Context Platform.getPropertyValue(Precision)"
+    else:
+        effective, source = "unreported_platform_default", "platform exposes no Precision property; no precision override applied"
+    pme_value = (platform.getPropertyValue(context, "DisablePmeStream")
+                 if "DisablePmeStream" in platform.getPropertyNames() else None)
+    if disable_pme_stream and pme_value != "true":
+        raise ValueError(f"Requested DisablePmeStream=true but Context reports {pme_value}")
+    return {"requested": requested, "effective": effective, "source": source,
+            "pme_stream": {"disable_requested": bool(disable_pme_stream),
+                           "override_applied": bool(disable_pme_stream),
+                           "effective_disabled": None if pme_value is None else pme_value == "true",
+                           "source": "Context Platform.getPropertyValue(DisablePmeStream)" if pme_value is not None else "property unavailable"},
+            "default_changed": False, "mixed_requires_independent_precision_validation": requested == "mixed"}
+
+
 def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_name,
                 qualification, provenance, device_index=None, started_at=None,
-                chemical_geometry=None, synthetic_fixture=False):
+                chemical_geometry=None, synthetic_fixture=False, precision="double", disable_pme_stream=False):
     """Execute an already qualified System; directly exercised by tiny engine fixtures."""
     start = time.monotonic() if started_at is None else started_at
+    if (not synthetic_fixture and platform_name in ("OpenCL", "CUDA")
+            and (precision != "double" or not disable_pme_stream)):
+        raise ValueError("Real GPU technical pilots require --precision double and --disable-pme-stream; use the separate precision benchmark for diagnostic comparisons")
     if chemical_geometry is None and not synthetic_fixture:
         raise ValueError("Full topology-derived chemical geometry is required; toy calls must explicitly declare synthetic_fixture=True")
     if not synthetic_fixture and qualification.get("chemical_review", {}).get("status") != CHEMICAL_REVIEW_PASS:
         raise ValueError(f"chemical_review.status must be {CHEMICAL_REVIEW_PASS}")
     if chemical_geometry is not None and not isinstance(chemical_geometry, ChemicalGeometry):
         raise ValueError("Chemical geometry must be an immutable topology-derived ChemicalGeometry")
+    platform, properties = platform_options(platform_name, precision, device_index, disable_pme_stream=disable_pme_stream)
     geometry_payload = asdict(chemical_geometry) if chemical_geometry is not None else None
     geometry_sha = hashlib.sha256(json.dumps(geometry_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest() if geometry_payload is not None else None
     deadline = start+settings.max_wall_seconds
@@ -424,6 +471,7 @@ def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_n
     summary = {"status": "started", "technical_accepted": False, "response_converged": False,
                "production_ready": False, "role": "zero_force_technical_engine_pilot_only",
                "model": model, "settings": asdict(settings), "force_h_kj_mol_nm": 0.,
+               "precision": {"requested": precision, "effective": None, "source": "Context not yet created", "default_changed": False},
                "chemical_review": qualification["chemical_review"], "input_provenance": provenance,
                "synthetic_fixture": bool(synthetic_fixture),
                "chemical_geometry_scope": "explicit_synthetic_fixture_without_protein_checks" if chemical_geometry is None else "all_protein_CA_HA_CB_centers_and_peptide_bonds_from_full_topology",
@@ -526,13 +574,8 @@ def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_n
             integrator = mm.LangevinMiddleIntegrator(settings.temperature_K, settings.friction_per_ps, settings.timestep_fs/1000)
             integrator.setRandomNumberSeed(settings.seed)
             integrator.setConstraintTolerance(settings.constraint_tolerance)
-            platform = mm.Platform.getPlatformByName(platform_name)
-            properties = {"Precision": "double"} if "Precision" in platform.getPropertyNames() else {}
-            if device_index is not None:
-                if "DeviceIndex" not in platform.getPropertyNames():
-                    raise ValueError("Selected platform has no DeviceIndex property")
-                properties["DeviceIndex"] = str(device_index)
             context = mm.Context(system, integrator, platform, properties)
+            summary["precision"] = precision_record(platform, context, precision, disable_pme_stream=disable_pme_stream)
             summary["platform"] = platform.getName()
             summary["platform_properties"] = {name: platform.getPropertyValue(context, name) for name in platform.getPropertyNames()}
             context.setPositions(xyz); context.computeVirtualSites()
@@ -605,9 +648,9 @@ def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_n
     return summary
 
 
-def run(prmtop, inpcrd, mapping_path, config_path, qualification_path, output_dir, *,
-        model="flexible", platform_name="OpenCL", device_index=None, overrides=None):
-    started = time.monotonic()
+def load_qualified_inputs(prmtop, inpcrd, mapping_path, config_path, qualification_path, *,
+                          model="flexible", overrides=None):
+    """Shared validated loading path; no Context, minimization or dynamics."""
     if model not in MODELS:
         raise ValueError("Unknown boundary model")
     qualification, hashes = qualify_inputs(prmtop, inpcrd, mapping_path, qualification_path)
@@ -643,9 +686,17 @@ def run(prmtop, inpcrd, mapping_path, config_path, qualification_path, output_di
                "source_sha256": {name: _sha256(ROOT/"scripts"/name) for name in
                                   ("run_atomistic_technical_pilot.py", "atomistic_boundary.py", "directional_mechanics.py")},
                "cumulative_budget_gpu_hours": config.get("initial_technical_pilot_gpu_hour_cap", 2.)}
-    return _run_engine(system, xyz, mapping, settings, output_dir, model=model, platform_name=platform_name,
-                       device_index=device_index, qualification=qualification, provenance=sources, started_at=started,
-                       chemical_geometry=chemical_geometry)
+    return {"system": system, "xyz": xyz, "mapping": mapping, "settings": settings,
+            "qualification": qualification, "provenance": sources, "chemical_geometry": chemical_geometry}
+
+
+def run(prmtop, inpcrd, mapping_path, config_path, qualification_path, output_dir, *,
+        model="flexible", platform_name="OpenCL", device_index=None, overrides=None, precision="double", disable_pme_stream=False):
+    started = time.monotonic()
+    loaded = load_qualified_inputs(prmtop, inpcrd, mapping_path, config_path, qualification_path,
+                                   model=model, overrides=overrides)
+    return _run_engine(**loaded, output_dir=output_dir, model=model, platform_name=platform_name,
+                       device_index=device_index, started_at=started, precision=precision, disable_pme_stream=disable_pme_stream)
 
 
 def main(argv=None):
@@ -656,8 +707,10 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, default=ROOT/"results/atomistic/technical_pilot")
     parser.add_argument("--offline", action="store_true", help="Explicit local-only intent; this runner has no network operations")
     parser.add_argument("--model", choices=MODELS, default="flexible")
-    parser.add_argument("--platform", choices=("OpenCL", "CUDA", "Reference", "CPU"), default="OpenCL")
+    parser.add_argument("--platform", choices=(*GPU_PLATFORMS, "Reference", "CPU"), default="OpenCL")
     parser.add_argument("--device-index")
+    parser.add_argument("--precision", choices=("double", "mixed"), default="double")
+    parser.add_argument("--disable-pme-stream", action="store_true", help="Required for real OpenCL/CUDA technical pilots; runtime readback required")
     for name, kind in (("steps", int), ("seed", int), ("gauge-k", float), ("max-wall-seconds", float),
                        ("report-interval-steps", int), ("benchmark-steps", int), ("minimization-max-iterations", int)):
         parser.add_argument("--"+name, type=kind)
@@ -666,7 +719,8 @@ def main(argv=None):
                                                         "report_interval_steps", "benchmark_steps", "minimization_max_iterations")}
     try:
         result = run(args.prmtop, args.inpcrd, args.mapping, args.config, args.qualification, args.output_dir,
-                      model=args.model, platform_name=args.platform, device_index=args.device_index, overrides=overrides)
+                      model=args.model, platform_name=args.platform, device_index=args.device_index, overrides=overrides,
+                      precision=args.precision, disable_pme_stream=args.disable_pme_stream)
     except Exception as error:
         print(json.dumps({"status": "rejected_before_pilot", "reason": f"{type(error).__name__}: {error}"}))
         return 2
