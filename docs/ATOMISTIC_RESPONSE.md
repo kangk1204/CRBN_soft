@@ -1,9 +1,9 @@
 # Atomistic test of DDB1 mobility
 
 This optional workflow tests the effect of DDB1 mobility on the response of
-CRBN along a fixed structural direction. It is under development. Its current
-simulation runner performs a short, zero-force technical test; it does not
-produce an equilibrated finite-force comparison or a manuscript result.
+CRBN along a fixed structural direction. It includes a short technical runner
+and a bounded NVT segment runner with separate preparation and sampling stages.
+Completing a segment does not establish equilibrium or a finite-force result.
 
 The existing network analyses and their frozen inputs remain unchanged. This
 workflow measures the same 269 CRBN C-alpha atoms, but simulates a chemically
@@ -271,6 +271,47 @@ rigid DDB1 response conditions use NVT. Recalculate the final salt concentration
 from the accepted equilibrated box volume before interpreting the solvent model.
 
 ## Measurement and scientific acceptance
+
+`run_atomistic_response_segment.py` runs one of four stages:
+`zero_equilibration`, `zero_calibration`, `force_equilibration`, or
+`force_sampling`. Supply the qualified topology, restart, mapping, configuration,
+model, replicate ID, master seed, explicit force, step target and wall limit.
+Real GPU runs require double precision and `--disable-pme-stream`.
+
+The `--parent-state` argument accepts a completed density-preparation directory
+only for the first zero-force equilibration stage. It transfers coordinates and
+box vectors, then initializes the requested NVT boundary condition. Subsequent
+stages use an exact, hash-bound parent segment with the same model, core,
+reference, gauge and molecular inputs. `--steps` specifies additional steps in
+the new stage, excluding the parent's steps. `--resume` continues the existing
+stage from its committed generation and rejects changes to its settings or
+provenance. Files in an incomplete generation are not restart authority.
+
+Calibration and force sampling require external, data-backed acceptance
+records. The runner checks their identity and artifact bindings; it does not
+decide scientific equilibration. A force plan must contain all nine accepted
+joint-model calibration replicas and bind their actual zero-force NPZs,
+segment records, stationarity records and initialization histories. The runner
+recomputes each within-replica variance and the aggregate digest. Changing a
+replica label, optional initial-state metadata or NPZ compression cannot turn
+the same initial state or scientific array content into independent evidence.
+
+For joint–isolated comparison, `--measurement-identity` supplies an explicit
+common-atom record with canonical CRBN residue order, endpoint atom identities,
+bound source mappings, and the proper rigid transform of the reference and
+closure vector. Endpoint atom indices may differ. The isolated nonzero-force
+stage requires this validated bridge to the joint calibration direction; it
+does not refit or reproject that direction. A new topology or mapping requires
+a newly bound measurement record. `--measurement-identity-sha256` can also pin
+the supplied record itself.
+
+`atomistic_zero_force_diagnostics.py` reads a committed zero-force segment and
+checks its generation artifacts before reporting closure projection, internal
+displacement, effective-sample estimates and block/half-trajectory summaries.
+Supply `--input-dir`, `--config`, a new `--output-dir`, `--offline` and an explicit
+`--equilibration-ps`. These are descriptive diagnostics. The command does not
+issue an equilibrium or stationarity certificate, and a technical-pilot output
+cannot substitute for a zero-force segment.
 
 With fixed unit direction `q`, measure `Q = q.T @ (x_core - x_reference)`.
 The scientific extension will apply the conjugate energy `-h*Q` at zero and
