@@ -618,6 +618,19 @@ def export_restart_with_parmed(prmtop: Path, inpcrd: Path, positions_nm: np.ndar
     structure.save(str(output), overwrite=True)
 
 
+
+def minimization_provenance(minimizer_report: Path, report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "minimizer_report": {
+            "path": str(minimizer_report),
+            "sha256": sha256_file(minimizer_report),
+        },
+        "status": report.get("status"),
+        "platform": report.get("platform"),
+        "precision": report.get("precision"),
+        "system_creation": report.get("system_creation"),
+    }
+
 def validate_restraints_sources(restraints_payload: dict[str, Any], *, prmtop: Path, amber_pdb_override: Path | None = None) -> dict[str, str]:
     sources = restraints_payload.get("sources", {})
     if not isinstance(sources, dict):
@@ -812,6 +825,7 @@ def qualify_minimized(
         "schema_version": "1.0",
         "status": "pass",
         "gates": gates,
+        "minimization_provenance": minimization_provenance(minimizer_report, report),
         "chemical_review": {"status": "technical_chemistry_preparation_pass", "scope": "technical preparation only; production false; no temperature/equilibration/MD-response claim"},
         "production_ready": False,
         "input_sha256": {"prmtop": sha256_file(prmtop), "inpcrd": sha256_file(restart), "mapping": sha256_file(mapping_out)},

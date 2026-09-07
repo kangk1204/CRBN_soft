@@ -185,6 +185,20 @@ def make_qualification_inputs(tmp_path: Path, *, omit_report_hash: str | None = 
             "minpositions": {"path": str(minpositions), "sha256": sha(minpositions)},
             "box": {"path": str(box), "sha256": sha(box)},
         },
+        "platform": {
+            "requested": "OpenCL",
+            "properties": {"Precision": "double", "DisablePmeStream": "true"},
+            "effective_properties": {"Precision": "double", "DisablePmeStream": "true"},
+        },
+        "precision": {
+            "requested_override": "double",
+            "effective": "double",
+            "pme_stream": {"effective_disabled": True},
+        },
+        "system_creation": {
+            "nonbonded_method_selected": "PME",
+            "removeCMMotion": False,
+        },
     }
     if omit_report_hash:
         report["sources"].pop(omit_report_hash, None)
@@ -214,12 +228,51 @@ def test_qualify_writes_mapping_restart_and_preserves_frozen_fields(tmp_path):
     q = result["qualification"]
     assert q["status"] == "pass"
     assert q["gates"] == {"metal": "pass", "mapping": "pass", "geometry": "pass"}
+    provenance = q["minimization_provenance"]
+    assert provenance["minimizer_report"] == {"path": str(report), "sha256": sha(report)}
+    assert provenance["platform"]["effective_properties"]["DisablePmeStream"] == "true"
+    assert provenance["precision"]["effective"] == "double"
+    assert provenance["precision"]["pme_stream"]["effective_disabled"] is True
+    assert provenance["system_creation"] == {
+        "nonbonded_method_selected": "PME",
+        "removeCMMotion": False,
+    }
     updated = h.read_json(Path(result["mapping_path"]))
     original = h.read_json(mapping)
     assert updated["reference_nm"] == original["reference_nm"]
     assert updated["q"] == original["q"]
     assert updated["initial_core_nm"] == [np.load(minpositions)[idx[("B", 64, "MET", "CA")]].tolist()]
     assert Path(result["restart_path"]).exists()
+
+
+def test_qualify_missing_minimizer_metadata_is_explicit_none(tmp_path):
+    args = make_qualification_inputs(tmp_path)
+    prmtop, inpcrd, mapping, restraints, report, minpositions, box, _idx = args
+    payload = h.read_json(report)
+    payload.pop("platform")
+    payload.pop("precision")
+    payload.pop("system_creation")
+    h.write_json(report, payload)
+
+    result = h.qualify_minimized(
+        prmtop=prmtop,
+        inpcrd=inpcrd,
+        mapping=mapping,
+        restraints=restraints,
+        minimizer_report=report,
+        minpositions=minpositions,
+        box=box,
+        output_dir=tmp_path / "qualified",
+        exporter=fake_exporter,
+        restart_verifier=fake_restart_verifier,
+        mapping_verifier=fake_mapping_verifier,
+    )
+
+    provenance = result["qualification"]["minimization_provenance"]
+    assert provenance["minimizer_report"] == {"path": str(report), "sha256": sha(report)}
+    assert provenance["platform"] is None
+    assert provenance["precision"] is None
+    assert provenance["system_creation"] is None
 
 
 def test_qualify_mapping_verifier_failure_blocks_outputs(tmp_path):

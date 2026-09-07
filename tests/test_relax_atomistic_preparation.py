@@ -263,6 +263,175 @@ def test_zn_sg_distances_use_raw_bonded_geometry_not_minimum_image():
         positions_changed=True,
     ) == "failed"
 
+
+class FakePlatformForOptions:
+    def __init__(self, names, values=None):
+        self._names = list(names)
+        self._values = dict(values or {})
+
+    def getPropertyNames(self):
+        return list(self._names)
+
+    def getPropertyValue(self, context, name):
+        return self._values[name]
+
+
+class FakePlatformFactory:
+    def __init__(self, platform):
+        self.platform = platform
+        self.requested_names = []
+
+    def getPlatformByName(self, name):
+        self.requested_names.append(name)
+        return self.platform
+
+
+def test_gpu_pme_requires_disable_before_context_creation():
+    with pytest.raises(ValueError, match="--disable-pme-stream"):
+        relax.validate_gpu_pme_request("OpenCL", "PME", False)
+    with pytest.raises(ValueError, match="--disable-pme-stream"):
+        relax.validate_gpu_pme_request("CUDA", "PME", False)
+
+    relax.validate_gpu_pme_request("OpenCL", "PME", True)
+    relax.validate_gpu_pme_request("OpenCL", "NoCutoff", False)
+    relax.validate_gpu_pme_request("Reference", "PME", False)
+
+
+def test_minimizer_platform_options_set_gpu_double_and_disable_pme_stream():
+    platform = FakePlatformForOptions(["Precision", "DeviceIndex", "DisablePmeStream"])
+    factory = FakePlatformFactory(platform)
+
+    selected, properties = relax.minimizer_platform_options(
+        factory,
+        "OpenCL",
+        "0",
+        disable_pme_stream=True,
+    )
+
+    assert selected is platform
+    assert factory.requested_names == ["OpenCL"]
+    assert properties == {
+        "Precision": "double",
+        "DeviceIndex": "0",
+        "DisablePmeStream": "true",
+    }
+
+
+def test_minimizer_platform_options_reject_missing_gpu_pme_stream_property():
+    platform = FakePlatformForOptions(["Precision"])
+    factory = FakePlatformFactory(platform)
+
+    with pytest.raises(ValueError, match="DisablePmeStream"):
+        relax.minimizer_platform_options(
+            factory,
+            "OpenCL",
+            None,
+            disable_pme_stream=True,
+        )
+
+
+def test_precision_provenance_uses_effective_context_property_readback():
+    platform = FakePlatformForOptions(
+        ["Precision", "DeviceIndex", "DisablePmeStream"],
+        {"Precision": "double", "DeviceIndex": "0", "DisablePmeStream": "true"},
+    )
+    context = object()
+
+    precision = relax.precision_provenance(
+        platform,
+        context,
+        requested="double",
+        disable_pme_stream=True,
+    )
+
+    assert precision["requested_override"] == "double"
+    assert precision["effective"] == "double"
+    assert precision["source"] == "Context Platform.getPropertyValue(Precision)"
+    assert precision["pme_stream"] == {
+        "disable_requested": True,
+        "override_applied": True,
+        "effective_disabled": True,
+        "source": "Context Platform.getPropertyValue(DisablePmeStream)",
+    }
+    assert relax.effective_platform_properties(platform, context) == {
+        "Precision": "double",
+        "DeviceIndex": "0",
+        "DisablePmeStream": "true",
+    }
+    relax.validate_effective_gpu_pme("OpenCL", "PME", precision)
+
+
+def test_precision_provenance_does_not_claim_precision_override_when_unavailable():
+    platform = FakePlatformForOptions([])
+
+    precision = relax.precision_provenance(
+        platform,
+        object(),
+        requested=None,
+        disable_pme_stream=False,
+    )
+
+    assert precision["requested_override"] is None
+    assert precision["effective"] == "unreported_platform_default"
+    assert precision["pme_stream"]["effective_disabled"] is None
+
+
+def test_precision_provenance_rejects_ineffective_gpu_pme_stream_disable():
+    platform = FakePlatformForOptions(
+        ["Precision", "DisablePmeStream"],
+        {"Precision": "double", "DisablePmeStream": "false"},
+    )
+
+    with pytest.raises(ValueError, match="DisablePmeStream=true"):
+        relax.precision_provenance(
+            platform,
+            object(),
+            requested="double",
+            disable_pme_stream=True,
+        )
+
+    precision = {"effective": "double", "pme_stream": {"effective_disabled": False}}
+    with pytest.raises(ValueError, match="effective double precision"):
+        relax.validate_effective_gpu_pme("OpenCL", "PME", precision)
+
+
+def test_cli_plumbs_disable_pme_stream_to_run(monkeypatch, tmp_path, capsys):
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "minimization_complete",
+            "heavy_clashes_lt_0p8A_excluding_bonded_neighbors": {"post_count": 0},
+        }
+
+    monkeypatch.setattr(relax, "run", fake_run)
+
+    rc = relax.main(
+        [
+            "--prmtop",
+            str(tmp_path / "input.prmtop"),
+            "--inpcrd",
+            str(tmp_path / "input.inpcrd"),
+            "--mapping",
+            str(tmp_path / "mapping.json"),
+            "--restrain-indices",
+            str(tmp_path / "restraints.json"),
+            "--prep",
+            str(tmp_path / "zinc.prep"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--platform",
+            "OpenCL",
+            "--disable-pme-stream",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["platform_name"] == "OpenCL"
+    assert captured["disable_pme_stream"] is True
+    assert json.loads(capsys.readouterr().out)["status"] == "minimization_complete"
+
 def test_status_requires_changed_positions_no_clashes_and_metal_bounds():
     assert (
         relax.status_from_checks(

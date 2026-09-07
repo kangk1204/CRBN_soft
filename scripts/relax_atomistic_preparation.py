@@ -22,6 +22,7 @@ DEFAULT_TOLERANCE = 10.0
 DEFAULT_MAX_ITERATIONS = 2000
 HEAVY_CLASH_CUTOFF_NM = 0.08
 ZN_SG_BOUNDS_NM = (0.19, 0.30)
+GPU_PME_PLATFORMS = {"OpenCL", "CUDA"}
 
 
 def sha256_file(path: Path) -> str:
@@ -35,6 +36,93 @@ def load_parameter_contract():
         from scripts.verify_zaff_amber_topology import parameter_contract
     return parameter_contract
 
+
+
+def gpu_pme_requires_disable(platform_name: str, nonbonded_method: str) -> bool:
+    return platform_name in GPU_PME_PLATFORMS and nonbonded_method == "PME"
+
+
+def validate_gpu_pme_request(platform_name: str, nonbonded_method: str, disable_pme_stream: bool) -> None:
+    if gpu_pme_requires_disable(platform_name, nonbonded_method) and not disable_pme_stream:
+        raise ValueError(
+            "GPU PME minimization on OpenCL/CUDA requires --disable-pme-stream before Context creation"
+        )
+
+
+def minimizer_platform_options(
+    platform_factory: Any,
+    platform_name: str,
+    device_index: str | None,
+    *,
+    disable_pme_stream: bool,
+) -> tuple[Any, dict[str, str]]:
+    platform = platform_factory.getPlatformByName(platform_name)
+    property_names = set(platform.getPropertyNames())
+    if platform_name in GPU_PME_PLATFORMS and "Precision" not in property_names:
+        raise ValueError(f"Platform {platform_name} does not expose Precision")
+    properties: dict[str, str] = {}
+    if "Precision" in property_names:
+        properties["Precision"] = "double"
+    if device_index is not None:
+        if "DeviceIndex" not in property_names:
+            raise ValueError(f"Platform {platform_name} does not support DeviceIndex")
+        properties["DeviceIndex"] = str(device_index)
+    if disable_pme_stream:
+        if platform_name not in GPU_PME_PLATFORMS or "DisablePmeStream" not in property_names:
+            raise ValueError("Selected GPU platform does not expose DisablePmeStream")
+        properties["DisablePmeStream"] = "true"
+    return platform, properties
+
+
+def effective_platform_properties(platform: Any, context: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name in platform.getPropertyNames():
+        if name in {"Precision", "DeviceIndex", "DisablePmeStream"}:
+            result[name] = platform.getPropertyValue(context, name)
+    return result
+
+
+def precision_provenance(
+    platform: Any,
+    context: Any,
+    *,
+    requested: str | None,
+    disable_pme_stream: bool = False,
+) -> dict[str, Any]:
+    property_names = set(platform.getPropertyNames())
+    if "Precision" in property_names:
+        effective = platform.getPropertyValue(context, "Precision")
+        if requested is not None and effective != requested:
+            raise ValueError(f"Requested precision {requested} but Context reports {effective}")
+        source = "Context Platform.getPropertyValue(Precision)"
+    else:
+        effective = "unreported_platform_default"
+        source = "platform exposes no Precision property; no precision override applied"
+    pme_value = platform.getPropertyValue(context, "DisablePmeStream") if "DisablePmeStream" in property_names else None
+    if disable_pme_stream and pme_value != "true":
+        raise ValueError(f"Requested DisablePmeStream=true but Context reports {pme_value}")
+    return {
+        "requested_override": requested,
+        "effective": effective,
+        "source": source,
+        "pme_stream": {
+            "disable_requested": bool(disable_pme_stream),
+            "override_applied": bool(disable_pme_stream),
+            "effective_disabled": None if pme_value is None else pme_value == "true",
+            "source": "Context Platform.getPropertyValue(DisablePmeStream)" if pme_value is not None else "property unavailable",
+        },
+        "default_changed": False,
+        "mixed_requires_independent_precision_validation": False,
+    }
+
+
+def validate_effective_gpu_pme(platform_name: str, nonbonded_method: str, precision: dict[str, Any]) -> None:
+    if not gpu_pme_requires_disable(platform_name, nonbonded_method):
+        return
+    if precision.get("effective") != "double" or precision.get("pme_stream", {}).get("effective_disabled") is not True:
+        raise ValueError(
+            "GPU PME minimization requires effective double precision and effective DisablePmeStream=true before minimization"
+        )
 
 def choose_nonbonded_method(requested: str, has_periodic_box: bool) -> str:
     if requested == "auto":
@@ -312,6 +400,7 @@ def run(
     tolerance: float = DEFAULT_TOLERANCE,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     nonbonded_method: str = "auto",
+    disable_pme_stream: bool = False,
 ) -> dict[str, Any]:
     from openmm import Context, LocalEnergyMinimizer, Platform, VerletIntegrator, app, unit
 
@@ -329,6 +418,7 @@ def run(
     else:
         amber = app.AmberPrmtopFile(str(prmtop))
     selected_nonbonded_method = choose_nonbonded_method(nonbonded_method, has_periodic_box)
+    validate_gpu_pme_request(platform_name, selected_nonbonded_method, disable_pme_stream)
     positions_nm = np.asarray(coordinates.positions.value_in_unit(unit.nanometer), dtype=float)
     atoms = list(amber.topology.atoms())
     if positions_nm.shape != (len(atoms), 3):
@@ -352,16 +442,22 @@ def run(
         raise ValueError(f"ZAFF parameter contract failed before Context creation: {zaff_contract['failures']}")
     restraint_force_index = add_position_restraints(system, restrain_indices, positions_nm, restraint_k)
     integrator = VerletIntegrator(0.001 * unit.picoseconds)
-    platform = Platform.getPlatformByName(platform_name)
-    properties = {}
-    if "Precision" in platform.getPropertyNames():
-        properties["Precision"] = "double"
-    if device_index is not None:
-        if "DeviceIndex" not in platform.getPropertyNames():
-            raise ValueError(f"Platform {platform_name} does not support DeviceIndex")
-        properties["DeviceIndex"] = str(device_index)
+    platform, properties = minimizer_platform_options(
+        Platform,
+        platform_name,
+        device_index,
+        disable_pme_stream=disable_pme_stream,
+    )
     context = Context(system, integrator, platform, properties)
     try:
+        precision = precision_provenance(
+            platform,
+            context,
+            requested=properties.get("Precision"),
+            disable_pme_stream=disable_pme_stream,
+        )
+        validate_effective_gpu_pme(platform_name, selected_nonbonded_method, precision)
+        effective_properties = effective_platform_properties(platform, context)
         context.setPositions(coordinates.positions)
         context.computeVirtualSites()
         initial_state = context.getState(getEnergy=True, getForces=True, getPositions=True)
@@ -429,7 +525,13 @@ def run(
             "force_index": restraint_force_index,
             "reference": "initial input coordinates for explicit observed-heavy restraint indices",
         },
-        "platform": {"requested": platform_name, "properties": properties},
+        "platform": {
+            "requested": platform_name,
+            "properties": properties,
+            "effective_properties": effective_properties,
+        },
+        "platform_option_requests": {"disable_pme_stream": bool(disable_pme_stream)},
+        "precision": precision,
         "system_creation": {
             "nonbonded_method_requested": nonbonded_method,
             "nonbonded_method_selected": selected_nonbonded_method,
@@ -494,6 +596,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--platform", default="OpenCL")
     parser.add_argument("--device-index")
+    parser.add_argument(
+        "--disable-pme-stream",
+        action="store_true",
+        help=(
+            "Required for OpenCL/CUDA PME minimization; verifies effective Context "
+            "DisablePmeStream=true before minimization"
+        ),
+    )
     parser.add_argument("--restraint-k", type=float, default=DEFAULT_RESTRAINT_K)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE)
     parser.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
@@ -524,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
         tolerance=args.tolerance,
         max_iterations=args.max_iterations,
         nonbonded_method=args.nonbonded_method,
+        disable_pme_stream=args.disable_pme_stream,
     )
     print(json.dumps({"status": report["status"], "post_clashes": report["heavy_clashes_lt_0p8A_excluding_bonded_neighbors"]["post_count"]}, indent=2))
     return 0 if report["status"] == "minimization_complete" else 1

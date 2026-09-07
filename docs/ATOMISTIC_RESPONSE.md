@@ -183,7 +183,7 @@ python scripts/relax_atomistic_preparation.py \
   --restrain-indices results/atomistic/amber/observed_heavy_restraints.json \
   --prep data/atomistic_parameters/ZAFF.prep \
   --output-dir results/atomistic/minimized --restraint-k 100000 \
-  --max-iterations 1000 --platform OpenCL --offline
+  --max-iterations 1000 --platform OpenCL --disable-pme-stream --offline
 python scripts/atomistic_preparation_handoff.py qualify \
   --prmtop results/atomistic/amber/solvated.prmtop \
   --inpcrd results/atomistic/hydrogen_minimized/hydrogen_minimized.rst7 \
@@ -195,6 +195,13 @@ python scripts/atomistic_preparation_handoff.py qualify \
   --box results/atomistic/minimized/box_vectors_nm.npy \
   --output-dir results/atomistic/qualified
 ```
+
+GPU PME minimization requires double precision and explicit
+`--disable-pme-stream`, with the effective Context property checked before
+minimization. The report distinguishes requested and effective properties.
+This uses the same force-evaluation setting that passed the same-coordinate
+checks for this environment. A chemical geometry check alone does not verify
+the numerical force setting used to obtain the coordinates.
 
 The last step rejects stale inputs, missing peptide bonds, wrong or nearly
 planar C-alpha/C-beta stereochemistry, and invalid raw Zn–S bonded distances.
