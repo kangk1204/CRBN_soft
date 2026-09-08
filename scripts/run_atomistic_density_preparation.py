@@ -45,7 +45,7 @@ class DensitySettings:
     friction_per_ps: float = 1.
     gauge_k: float = 1000.
     seed: int = 20260907
-    max_wall_seconds: float = 300.
+    max_wall_seconds: float | None = 300.
     report_interval_steps: int = 100
     max_step_batch: int = 100
     constraint_tolerance: float = 1e-6
@@ -164,7 +164,9 @@ def resolve_density_settings(config, overrides=None):
     if unknown:
         raise ValueError(f"Unknown density_preparation setting(s): {sorted(unknown)}")
     values.update(block)
-    values.update({k: v for k, v in (overrides or {}).items() if v is not None})
+    for key, value in (overrides or {}).items():
+        if value is not None or key == "max_wall_seconds":
+            values[key] = value
     integer_keys = ("nvt_steps", "npt_steps", "seed", "report_interval_steps",
                     "max_step_batch", "barostat_frequency_steps", "checkpoint_interval_steps")
     nonnegative_integer_keys = ("nvt_steps",)
@@ -174,6 +176,8 @@ def resolve_density_settings(config, overrides=None):
             raise ValueError(f"{key} must be boolean")
     for key, value in values.items():
         if key in boolean_keys:
+            continue
+        if key == "max_wall_seconds" and value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
             raise ValueError(f"{key} must be finite numeric")
@@ -479,7 +483,7 @@ def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_n
         _atomic_text(output_dir / "system.xml", system_xml)
     platform, properties = _platform_options(platform_name, precision, device_index,
                                              settings.disable_pme_stream)
-    deadline = start + settings.max_wall_seconds
+    deadline = None if settings.max_wall_seconds is None else start + settings.max_wall_seconds
     integrator = _integrator(settings)
     context = None
     rows = []
@@ -784,7 +788,7 @@ def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_n
         return row
 
     try:
-        if time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             raise _BudgetStop("Wall budget exhausted before Context creation")
         if completed["nvt"] < settings.nvt_steps:
             barostat.setFrequency(0)
@@ -822,7 +826,7 @@ def _run_engine(system, xyz, mapping, settings, output_dir, *, model, platform_n
             if completed[phase] == 0 and not restart_pointer:
                 sample(phase, "phase_start", False)
             while completed[phase] < target_steps[phase]:
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     raise _BudgetStop("Wall budget reached at integration batch boundary")
                 remaining = target_steps[phase] - completed[phase]
                 until_report = settings.report_interval_steps - completed[phase] % settings.report_interval_steps
@@ -909,11 +913,19 @@ def main(argv=None):
         parser.add_argument("--" + name, type=kind)
     parser.add_argument("--disable-pme-stream", action="store_true", default=None,
                         help="Required for non-synthetic OpenCL/CUDA density preparation; default PME stream mode is rejected for production density.")
+    parser.add_argument("--no-wall-limit", action="store_true",
+                        help="Explicitly run without an internal wall-clock deadline; scientific step targets and restart contracts are unchanged.")
     args = parser.parse_args(argv)
+    if args.no_wall_limit and args.max_wall_seconds is not None:
+        parser.error("--no-wall-limit cannot be combined with --max-wall-seconds")
     overrides = {name: getattr(args, name) for name in
-                 ("nvt_steps", "npt_steps", "seed", "gauge_k", "max_wall_seconds",
+                 ("nvt_steps", "npt_steps", "seed", "gauge_k",
                   "report_interval_steps", "max_step_batch", "checkpoint_interval_steps",
-                  "disable_pme_stream")}
+                  "disable_pme_stream") if getattr(args, name) is not None}
+    if args.max_wall_seconds is not None:
+        overrides["max_wall_seconds"] = args.max_wall_seconds
+    if args.no_wall_limit:
+        overrides["max_wall_seconds"] = None
     try:
         result = run(args.prmtop, args.inpcrd, args.mapping, args.config, args.qualification,
                      args.output_dir, model=args.model, platform_name=args.platform,

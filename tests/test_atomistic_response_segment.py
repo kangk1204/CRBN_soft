@@ -1203,6 +1203,91 @@ def test_wall_budget_preserves_last_valid_generation(tmp_path, monkeypatch):
     assert (tmp_path / result["current_generation"] / "segment.chk").exists()
 
 
+def test_no_wall_limit_completes_without_deadline(tmp_path, monkeypatch):
+    monkeypatch.setattr(segment.time, "monotonic", lambda: 1_000_000.0)
+    result = run_segment(
+        system=fixture_system(),
+        xyz=XYZ,
+        mapping=fixture_mapping(),
+        settings=settings(steps=4, report_interval_steps=2, max_step_batch=2, max_wall_seconds=None),
+        output_dir=tmp_path,
+        phase="zero_equilibration",
+        model="isolated",
+        replicate_id="r1",
+        force_h=0.0,
+        platform_name="Reference",
+        synthetic_fixture=True,
+    )
+    assert result["status"] == "segment_complete"
+    assert result["settings"]["max_wall_seconds"] is None
+    assert result["last_committed_step"] == 4
+
+
+def test_resume_rejects_changed_wall_limit_mode(tmp_path):
+    run_segment(
+        system=fixture_system(),
+        xyz=XYZ,
+        mapping=fixture_mapping(),
+        settings=settings(steps=4, report_interval_steps=2, max_step_batch=2, max_wall_seconds=None),
+        output_dir=tmp_path,
+        phase="zero_equilibration",
+        model="isolated",
+        replicate_id="r1",
+        force_h=0.0,
+        platform_name="Reference",
+        synthetic_fixture=True,
+    )
+    with pytest.raises(ResumeMismatch, match="settings"):
+        run_segment(
+            system=fixture_system(),
+            xyz=XYZ,
+            mapping=fixture_mapping(),
+            settings=settings(steps=4, report_interval_steps=2, max_step_batch=2, max_wall_seconds=60.0),
+            output_dir=tmp_path,
+            phase="zero_equilibration",
+            model="isolated",
+            replicate_id="r1",
+            force_h=0.0,
+            platform_name="Reference",
+            synthetic_fixture=True,
+            resume=True,
+        )
+
+
+def test_cli_no_wall_limit_sets_null_override_and_rejects_conflict(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_from_qualified(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "segment_complete",
+            "segment_complete": True,
+            "response_converged": False,
+            "last_committed_step": 4,
+        }
+
+    monkeypatch.setattr(segment, "run_from_qualified", fake_run_from_qualified)
+    argv = [
+        "--prmtop", str(tmp_path / "p.prmtop"),
+        "--inpcrd", str(tmp_path / "x.inpcrd"),
+        "--mapping", str(tmp_path / "mapping.json"),
+        "--qualification", str(tmp_path / "qualification.json"),
+        "--output-dir", str(tmp_path / "out"),
+        "--phase", "zero_equilibration",
+        "--model", "isolated",
+        "--replicate-id", "r1",
+        "--force-kj-mol-nm", "0",
+        "--platform", "Reference",
+        "--master-seed", "12345",
+        "--no-wall-limit",
+    ]
+    assert segment.main(argv) == 0
+    assert captured["overrides"]["max_wall_seconds"] is None
+
+    with pytest.raises(SystemExit):
+        segment.main(argv + ["--max-wall-seconds", "60"])
+
+
 def test_run_from_qualified_uses_loader_interface_and_segment_settings(tmp_path, monkeypatch):
     calls = {}
     for name in ("prmtop", "inpcrd", "mapping", "qualification"):

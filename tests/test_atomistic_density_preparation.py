@@ -173,6 +173,54 @@ def test_early_invalid_geometry_writes_failed_summary_without_restart_or_handoff
     assert not (tmp_path / "npt_to_nvt_handoff.npz").exists()
 
 
+def test_density_settings_accept_no_wall_limit_and_validate_supplied_wall_values():
+    settings = density.resolve_density_settings({"density_preparation": {"npt_steps": 1}},
+                                                {"max_wall_seconds": None})
+    assert settings.max_wall_seconds is None
+
+    for bad_value in (0, -1, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="max_wall_seconds"):
+            density.resolve_density_settings({"density_preparation": {"npt_steps": 1}},
+                                             {"max_wall_seconds": bad_value})
+
+
+def test_resume_from_finite_wall_to_no_wall_limit_keeps_restart_contract(tmp_path, monkeypatch):
+    system, xyz, mapping, model = density_fixture()
+    calls = {"n": 0}
+
+    def clock():
+        calls["n"] += 1
+        return 1. if calls["n"] > 6 else 0.
+
+    monkeypatch.setattr(density.time, "monotonic", clock)
+    first = density._run_engine(
+        system, xyz, mapping,
+        density.DensitySettings(npt_steps=2, report_interval_steps=1, checkpoint_interval_steps=1,
+                                max_step_batch=1, max_wall_seconds=.5),
+        tmp_path, model=model, platform_name=TEST_PLATFORM, synthetic_fixture=True,
+        qualification={"chemical_review": {"status": "pending"}},
+        provenance={"input_sha256": INPUT_HASHES},
+    )
+    assert first["status"] == "budget_limited"
+    restart_before = json.loads((tmp_path / "current_restart.json").read_text())
+    assert restart_before["settings"]["max_wall_seconds"] == .5
+
+    resumed = density._run_engine(
+        system, xyz, mapping,
+        density.DensitySettings(npt_steps=2, report_interval_steps=1, checkpoint_interval_steps=1,
+                                max_step_batch=1, max_wall_seconds=None),
+        tmp_path, model=model, platform_name=TEST_PLATFORM, synthetic_fixture=True,
+        qualification={"chemical_review": {"status": "pending"}},
+        provenance={"input_sha256": INPUT_HASHES},
+    )
+    assert resumed["status"] == "density_completed", resumed.get("reason")
+    assert resumed["completed_by_phase"] == {"nvt": 0, "npt": 2}
+    assert resumed["settings"]["max_wall_seconds"] is None
+    restart_after = json.loads((tmp_path / "current_restart.json").read_text())
+    assert restart_after["settings"]["max_wall_seconds"] is None
+    assert restart_after["settings_contract"] == restart_before["settings_contract"]
+
+
 def test_context_creation_failure_writes_failed_summary_without_restart_or_handoff(tmp_path, monkeypatch):
     system, xyz, mapping, model = density_fixture()
 
@@ -532,5 +580,31 @@ def test_cli_shared_loader_returns_density_settings_and_provenance(tmp_path, mon
                          "--output-dir", str(tmp_path / "cli"), "--model", "isolated",
                          "--platform", TEST_PLATFORM, "--offline"])
     assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "density_completed"
+
+
+def test_cli_no_wall_limit_passes_explicit_none_override(tmp_path, monkeypatch, capsys):
+    prmtop, inpcrd, mapping_path, qualification_path = [tmp_path / name for name in
+                                                        ("toy.prmtop", "toy.inpcrd", "mapping.json", "qualification.json")]
+    for index, path in enumerate((prmtop, inpcrd, mapping_path, qualification_path)):
+        path.write_text(f"fixture-{index}")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"density_preparation": {"npt_steps": 1}}))
+    captured = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"status": "density_completed", "density_preparation_completed": True,
+                "equilibrium_certified": False, "production_ready": False,
+                "completed_by_phase": {"nvt": 0, "npt": 1}, "elapsed_wall_seconds": 0.}
+
+    monkeypatch.setattr(density, "run", fake_run)
+    code = density.main(["--prmtop", str(prmtop), "--inpcrd", str(inpcrd), "--mapping", str(mapping_path),
+                         "--qualification", str(qualification_path), "--config", str(config_path),
+                         "--output-dir", str(tmp_path / "cli"), "--model", "isolated",
+                         "--platform", TEST_PLATFORM, "--offline", "--no-wall-limit"])
+    assert code == 0
+    assert captured["overrides"]["max_wall_seconds"] is None
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "density_completed"

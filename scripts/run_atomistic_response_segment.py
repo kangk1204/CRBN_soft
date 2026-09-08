@@ -61,7 +61,7 @@ class SegmentSettings:
     thermostat_seed: int = 0
     report_interval_steps: int = 100
     max_step_batch: int = 100
-    max_wall_seconds: float = 300.0
+    max_wall_seconds: float | None = 300.0
     constraint_tolerance: float = 1e-6
     disable_pme_stream: bool = False
 
@@ -173,7 +173,10 @@ def resolve_segment_settings(config: Mapping[str, Any], overrides: Mapping[str, 
     if unknown:
         raise ValueError(f"Unknown response_segment setting(s): {sorted(unknown)}")
     values.update(section)
-    values.update({key: value for key, value in (overrides or {}).items() if value is not None})
+    for key, value in (overrides or {}).items():
+        if value is None and key != "max_wall_seconds":
+            continue
+        values[key] = value
     integer_keys = ("steps", "master_seed", "velocity_seed", "thermostat_seed", "report_interval_steps", "max_step_batch")
     boolean_keys = ("disable_pme_stream",)
     for key in boolean_keys:
@@ -181,6 +184,8 @@ def resolve_segment_settings(config: Mapping[str, Any], overrides: Mapping[str, 
             raise ValueError(f"{key} must be boolean")
     for key, value in values.items():
         if key in boolean_keys:
+            continue
+        if key == "max_wall_seconds" and value is None:
             continue
         if key in ("velocity_seed", "thermostat_seed") and value == 0:
             continue
@@ -1417,7 +1422,7 @@ def run_segment(
     settings = _resolved_settings(settings, model=model, replicate_id=replicate_id, phase=phase, force_h=force_h)
     if not synthetic_fixture and platform_name in {"OpenCL", "CUDA"} and not settings.disable_pme_stream:
         raise AdmissionError("Non-synthetic GPU response segments require --disable-pme-stream after the PME stream force-consistency screen")
-    deadline = start + settings.max_wall_seconds
+    deadline = None if settings.max_wall_seconds is None else start + settings.max_wall_seconds
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     topology_hash = _topology_fingerprint(topology)
@@ -1631,7 +1636,7 @@ def run_segment(
         if current_step > target_global_step:
             raise ResumeMismatch("Checkpoint is beyond requested segment target step")
         while current_step < target_global_step:
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 manifest["status"] = "budget_limited"
                 manifest["segment_complete"] = False
                 manifest["response_converged"] = False
@@ -1737,6 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device-index")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--disable-pme-stream", action="store_true", default=None)
+    parser.add_argument("--no-wall-limit", action="store_true", help="Opt in to no wall-clock deadline; max_wall_seconds is recorded as null")
     parser.add_argument("--locked-force-plan", type=Path)
     parser.add_argument("--parent-state", type=Path)
     parser.add_argument("--equilibration-certificate", type=Path)
@@ -1755,6 +1761,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument("--" + name, type=kind)
     args = parser.parse_args(argv)
+    if args.no_wall_limit and args.max_wall_seconds is not None:
+        parser.error("--no-wall-limit cannot be combined with --max-wall-seconds")
     overrides = {
         "steps": args.steps,
         "master_seed": args.master_seed,
@@ -1763,9 +1771,10 @@ def main(argv: list[str] | None = None) -> int:
         "gauge_k": args.gauge_k,
         "report_interval_steps": args.report_interval_steps,
         "max_step_batch": args.max_step_batch,
-        "max_wall_seconds": args.max_wall_seconds,
         "disable_pme_stream": args.disable_pme_stream,
     }
+    if args.max_wall_seconds is not None or args.no_wall_limit:
+        overrides["max_wall_seconds"] = None if args.no_wall_limit else args.max_wall_seconds
     try:
         result = run_from_qualified(
             prmtop=args.prmtop,
