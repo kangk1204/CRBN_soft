@@ -36,6 +36,38 @@ def fixture_system(xyz=XYZ, masses=MASSES, internal_constraint=True):
     return system
 
 
+def custom_lj_system(xyz=XYZ, masses=MASSES, *, lrc=False):
+    system = fixture_system(xyz, masses, internal_constraint=True)
+    custom = mm.CustomNonbondedForce(
+        "(a/r6)^2-b/r6; r6=r^6; a=acoef(type1,type2); b=bcoef(type1,type2);"
+    )
+    custom.setName("CustomNonbondedForce")
+    custom.addPerParticleParameter("type")
+    # Type 0 is deliberately inert.  Type 1 has a finite LJ correction, so
+    # using any existing physical type for anchors would create interactions.
+    custom.addTabulatedFunction("acoef", mm.Discrete2DFunction(2, 2, [0., 0., 0., 0.02]))
+    custom.addTabulatedFunction("bcoef", mm.Discrete2DFunction(2, 2, [0., 0., 0., 0.04]))
+    for _ in range(len(masses)):
+        custom.addParticle([1.])
+    custom.addExclusion(0, 1)
+    custom.setUseLongRangeCorrection(bool(lrc))
+    custom.setNonbondedMethod(
+        mm.CustomNonbondedForce.CutoffPeriodic if lrc else mm.CustomNonbondedForce.NoCutoff
+    )
+    if lrc:
+        custom.setCutoffDistance(1.0)
+        system.setDefaultPeriodicBoxVectors(mm.Vec3(4,0,0), mm.Vec3(0,4,0), mm.Vec3(0,0,4))
+    custom.setForceGroup(1)
+    system.addForce(custom)
+    return system
+
+
+def custom_nonbonded(system):
+    matches = [force for force in system.getForces() if type(force) is mm.CustomNonbondedForce]
+    assert len(matches) == 1
+    return matches[0]
+
+
 @contextmanager
 def engine(system, xyz, integrator=None):
     if integrator is None:
@@ -110,6 +142,87 @@ def test_virtual_site_force_and_torque_transfer():
         np.testing.assert_allclose(forces[anchors].sum(axis=0), applied, atol=1e-12)
         torque = np.cross(result.positions_nm[anchors]-center, forces[anchors]).sum(axis=0)
         np.testing.assert_allclose(torque, np.cross(XYZ[2]-center, applied), atol=1e-12)
+
+
+def test_fixed_body_preserves_custom_nonbonded_force():
+    original = custom_lj_system()
+    before = mm.XmlSerializer.serialize(original)
+    result = make_fixed_body(original, BODY)
+    assert mm.XmlSerializer.serialize(original) == before
+    copied = custom_nonbonded(result.system)
+    assert copied.getEnergyFunction() == custom_nonbonded(original).getEnergyFunction()
+    assert copied.getNumParticles() == result.system.getNumParticles() == len(XYZ)
+    assert copied.getNumExclusions() == 1
+    assert copied.getForceGroup() == 1
+    np.testing.assert_allclose(copied.getParticleParameters(6), [1.])
+    with engine(original, XYZ) as (context, _):
+        original_energy, _ = energy_force(context)
+    with engine(result.system, XYZ) as (context, _):
+        fixed_energy, _ = energy_force(context)
+    assert fixed_energy == pytest.approx(original_energy, abs=1e-12)
+
+
+def test_rigid_body_adds_inert_custom_nonbonded_anchors_and_preserves_forces():
+    original = custom_lj_system()
+    before = mm.XmlSerializer.serialize(original)
+    result = make_rigid_body(original, XYZ, BODY)
+    assert mm.XmlSerializer.serialize(original) == before
+    copied = custom_nonbonded(result.system)
+    anchors = result.metadata["anchor_indices"]
+    assert copied.getNumParticles() == result.system.getNumParticles() == len(XYZ)+4
+    assert copied.getNumExclusions() == 1
+    for i in anchors:
+        np.testing.assert_allclose(copied.getParticleParameters(i), [0.])
+    with engine(original, XYZ) as (context, _):
+        original_energy, original_forces = energy_force(context)
+    with engine(result.system, result.positions_nm) as (context, _):
+        rigid_energy, rigid_forces = energy_force(context)
+        assert rigid_energy == pytest.approx(original_energy, abs=1e-10)
+        center = np.asarray(result.metadata["center_of_mass_nm"])
+        net = original_forces[BODY].sum(axis=0)
+        torque = np.cross(XYZ[BODY]-center, original_forces[BODY]).sum(axis=0)
+        np.testing.assert_allclose(rigid_forces[anchors].sum(axis=0), net, atol=1e-10)
+        np.testing.assert_allclose(
+            np.cross(result.positions_nm[anchors]-center, rigid_forces[anchors]).sum(axis=0),
+            torque, atol=1e-10,
+        )
+
+
+def test_rigid_body_preserves_custom_nonbonded_lrc_forces_with_bounded_offset():
+    original = custom_lj_system(lrc=True)
+    result = make_rigid_body(original, XYZ, BODY)
+    copied = custom_nonbonded(result.system)
+    assert copied.getUseLongRangeCorrection() is True
+    assert copied.getNonbondedMethod() == mm.CustomNonbondedForce.CutoffPeriodic
+    assert copied.getNumInteractionGroups() == 0
+    with engine(original, XYZ) as (context, _):
+        original_energy, original_forces = energy_force(context)
+    with engine(result.system, result.positions_nm) as (context, _):
+        rigid_energy, rigid_forces = energy_force(context)
+    anchors = result.metadata["anchor_indices"]
+    center = np.asarray(result.metadata["center_of_mass_nm"])
+    net = original_forces[BODY].sum(axis=0)
+    torque = np.cross(XYZ[BODY]-center, original_forces[BODY]).sum(axis=0)
+    np.testing.assert_allclose(rigid_forces[anchors].sum(axis=0), net, atol=1e-10)
+    np.testing.assert_allclose(
+        np.cross(result.positions_nm[anchors]-center, rigid_forces[anchors]).sum(axis=0),
+        torque, atol=1e-10,
+    )
+    # OpenMM CustomNonbondedForce LRC normalizes by the System particle count.
+    # Adding four inert mechanical anchors therefore introduces a constant NVT
+    # potential offset for tiny toy systems, while leaving forces unchanged.
+    assert abs(rigid_energy-original_energy) < 4e-3
+
+
+def test_rigid_body_rejects_custom_nonbonded_without_zero_anchor_type():
+    system = custom_lj_system()
+    custom = custom_nonbonded(system)
+    custom.getTabulatedFunction(0).setFunctionParameters(2, 2, [0.01, 0.02, 0.03, 0.04])
+    custom.getTabulatedFunction(1).setFunctionParameters(2, 2, [0.01, 0.02, 0.03, 0.04])
+    before = mm.XmlSerializer.serialize(system)
+    with pytest.raises(ValueError, match="zero-interaction LJ type"):
+        make_rigid_body(system, XYZ, BODY)
+    assert mm.XmlSerializer.serialize(system) == before
 
 
 def test_bonded_nonbonded_energy_and_generalized_forces_preserved():
@@ -330,7 +443,7 @@ def test_frozen_269_core_double_precision_at_gauge_1e4():
     np.testing.assert_allclose(*measured_energies, rtol=0., atol=1e-12)
 
 
-@pytest.mark.parametrize("kind", ["cross_constraint", "unknown_force", "unknown_compound_force", "active_barostat", "body_virtual_site"])
+@pytest.mark.parametrize("kind", ["cross_constraint", "unknown_force", "unknown_compound_force", "custom_nonbonded_count", "active_barostat", "body_virtual_site"])
 @pytest.mark.parametrize("mode", ["fixed", "rigid"])
 def test_unsupported_input_rejected_without_mutation(kind, mode):
     system = fixture_system()
@@ -340,6 +453,10 @@ def test_unsupported_input_rejected_without_mutation(kind, mode):
         system.addForce(mm.CustomBondForce("0"))
     elif kind == "unknown_compound_force":
         system.addForce(mm.CustomCompoundBondForce(1, "0"))
+    elif kind == "custom_nonbonded_count":
+        custom = mm.CustomNonbondedForce("0")
+        custom.addParticle([])
+        system.addForce(custom)
     elif kind == "active_barostat":
         system.addForce(mm.MonteCarloBarostat(1, 300, 25))
     else:

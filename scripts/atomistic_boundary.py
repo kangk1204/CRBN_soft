@@ -122,18 +122,82 @@ def _linear_force(ids, ref, coefficients, expression):
     return force
 
 
+_AMBER_CUSTOM_LJ_EXPRESSION = "(a/r6)^2-b/r6;r6=r^6;a=acoef(type1,type2);b=bcoef(type1,type2);"
+
+
+def _custom_nonbonded_anchor_parameters(force):
+    """Return noninteracting per-particle parameters for rigid anchors.
+
+    OpenMM's Amber parser may represent LJ interactions as a CustomNonbondedForce
+    backed by acoef/bcoef(type1,type2) tables.  Rigid anchors must be present
+    in every nonbonded force, but they are mechanical particles and must not
+    introduce any physical pair interactions.  We therefore only support this
+    known table form and require an exactly zero row and column in every table.
+    Other custom expressions remain fail-closed. With long-range correction
+    enabled, OpenMM's particle-count normalization can change its constant NVT
+    energy offset when anchors are added; the correction is not disabled.
+    """
+    if (force.getNumPerParticleParameters() != 1
+            or force.getPerParticleParameterName(0) != "type"):
+        raise ValueError("CustomNonbondedForce rigid anchors require a single type parameter")
+    expression = re.sub(r"\s+", "", force.getEnergyFunction())
+    if expression != _AMBER_CUSTOM_LJ_EXPRESSION:
+        raise ValueError("Unsupported CustomNonbondedForce expression for rigid anchors")
+    tables = {}
+    for i in range(force.getNumTabulatedFunctions()):
+        tables[force.getTabulatedFunctionName(i)] = force.getTabulatedFunction(i)
+    if set(tables) != {"acoef", "bcoef"}:
+        raise ValueError("CustomNonbondedForce rigid anchors require acoef/bcoef tables")
+    arrays = []
+    shape = None
+    for name in ("acoef", "bcoef"):
+        table = tables[name]
+        if type(table) is not mm.Discrete2DFunction:
+            raise ValueError("CustomNonbondedForce LJ tables must be Discrete2DFunction")
+        xsize, ysize, values = table.getFunctionParameters()
+        if xsize != ysize:
+            raise ValueError("CustomNonbondedForce LJ table must be square")
+        if len(values) != xsize*ysize:
+            raise ValueError("CustomNonbondedForce LJ table has inconsistent size")
+        current_shape = (int(xsize), int(ysize))
+        if shape is None:
+            shape = current_shape
+        elif current_shape != shape:
+            raise ValueError("CustomNonbondedForce LJ tables have inconsistent dimensions")
+        array = np.asarray(values, dtype=float).reshape((ysize, xsize))
+        if not np.isfinite(array).all():
+            raise ValueError("CustomNonbondedForce LJ table contains nonfinite coefficients")
+        arrays.append(array)
+    for i in range(force.getNumParticles()):
+        value = float(force.getParticleParameters(i)[0])
+        if not np.isfinite(value):
+            raise ValueError("CustomNonbondedForce type parameters must be finite")
+        rounded = round(value)
+        if abs(value-rounded) > 1e-12:
+            raise ValueError("CustomNonbondedForce type parameters must be integer table indices")
+        if rounded < 0 or rounded >= shape[0]:
+            raise ValueError("CustomNonbondedForce type index exceeds table dimensions")
+    for candidate in range(shape[0]):
+        if all(np.all(table[candidate, :] == 0) and np.all(table[:, candidate] == 0)
+               for table in arrays):
+            return [float(candidate)]
+    raise ValueError("CustomNonbondedForce has no zero-interaction LJ type for rigid anchors")
+
+
 def _preflight_body(system, body_indices):
     ids = _indices(system, body_indices)
     body = set(ids)
     supported = (mm.HarmonicBondForce, mm.HarmonicAngleForce,
                  mm.PeriodicTorsionForce, mm.RBTorsionForce,
-                 mm.NonbondedForce, mm.CMMotionRemover,
+                 mm.NonbondedForce, mm.CustomNonbondedForce, mm.CMMotionRemover,
                  mm.MonteCarloBarostat, mm.CustomExternalForce)
     for force in system.getForces():
         if type(force) not in supported and not _our_gauge(force) and not _our_probe(force):
             raise ValueError(f"Unsupported force for body conversion: {type(force).__name__}")
         if type(force) is mm.NonbondedForce and force.getNumParticles() != system.getNumParticles():
             raise ValueError("NonbondedForce particle count differs from System")
+        if type(force) is mm.CustomNonbondedForce and force.getNumParticles() != system.getNumParticles():
+            raise ValueError("CustomNonbondedForce particle count differs from System")
         if type(force) is mm.MonteCarloBarostat and force.getFrequency() != 0:
             raise ValueError("Boundary validation requires NVT: disable the barostat first")
     removed = []
@@ -276,6 +340,10 @@ def make_rigid_body(system, positions_nm, body_indices):
         if type(force) is mm.NonbondedForce:
             for _ in range(4):
                 force.addParticle(0, 1, 0)
+        elif type(force) is mm.CustomNonbondedForce:
+            anchor_parameters = _custom_nonbonded_anchor_parameters(force)
+            for _ in range(4):
+                force.addParticle(anchor_parameters)
     for i, j in combinations(range(4), 2):
         out.addConstraint(anchor_ids[i], anchor_ids[j], float(np.linalg.norm(anchors[i]-anchors[j])))
     for i, position in zip(ids, local):
